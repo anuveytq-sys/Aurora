@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AudioLines, ChevronDown, Disc3, ExternalLink, Maximize2, Music2, Orbit, Sparkles, X } from "lucide-react";
+import { AudioLines, ChevronDown, Disc3, Music2, Orbit, Sparkles } from "lucide-react";
 
 const stars = Array.from({ length: 115 }, (_, index) => ({
   id: index,
@@ -13,7 +13,7 @@ const stars = Array.from({ length: 115 }, (_, index) => ({
 
 export default function App() {
   const [dockOpen, setDockOpen] = useState(true);
-  const [notice, setNotice] = useState("Your music universe is ready");
+  const notice = "Your music universe is ready";
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -26,17 +26,6 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
-
-  function loadSpotifyEmbed(event) {
-    event.preventDefault();
-    const match = spotifyUrl.trim().match(/open\.spotify\.com\/(track|album|playlist|artist|episode|show)\/([A-Za-z0-9]+)/);
-    if (!match) {
-      setNotice("Paste a valid Spotify content link to prepare its embed.");
-      return;
-    }
-    setEmbedUrl(`https://open.spotify.com/embed/${match[1]}/${match[2]}?utm_source=generator&theme=0`);
-    setNotice("Spotify embed prepared. Playback availability depends on Spotify and your account.");
-  }
 
   return (
     <main className="universe">
