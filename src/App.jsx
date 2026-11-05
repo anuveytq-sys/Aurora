@@ -51,7 +51,7 @@ async function appleSearch(term) {
     trackViewUrl: entry.id?.label,
     primaryGenreName: entry.category?.attributes?.label
   }));
-  return rows.filter(t => t.trackName && t.artistName).map(normalizeApple);
+  return rows.filter(t => t.trackName && t.artistName && t.previewUrl).map(normalizeApple);
 }
 async function fetchSyncedLyrics(item) {
   const params = new URLSearchParams({
@@ -105,7 +105,8 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
-  const [lyrics, setLyrics] = useState([]);\n  const [lyricsStatus, setLyricsStatus] = useState("idle");
+  const [lyrics, setLyrics] = useState([]);
+  const [lyricsStatus, setLyricsStatus] = useState("idle");
   const [lyricFileName, setLyricFileName] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
   const [palette, setPalette] = useState(["#a9c8ff", "#5976c8", "#111a38"]);
@@ -161,6 +162,23 @@ export default function App() {
     return () => { image.onload = null; };
   }, [track]);
 
+  async function ensureAudioGraph(element) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass && !sourceRef.current) {
+      const context = new AudioContextClass();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = .68;
+      const source = context.createMediaElementSource(element);
+      source.connect(analyser);
+      analyser.connect(context.destination);
+      contextRef.current = context;
+      analyserRef.current = analyser;
+      sourceRef.current = source;
+    }
+    if (contextRef.current?.state === "suspended") await contextRef.current.resume();
+  }
+
   async function playSelected(item) {
     setTrack(item);
     setRecent(old => [item, ...old.filter(x => x.id !== item.id)].slice(0, 8));
@@ -181,16 +199,7 @@ export default function App() {
     if (!element) return;
     if (element.paused) {
       try {
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        if (AudioContextClass && !sourceRef.current) {
-          const context = new AudioContextClass();
-          const analyser = context.createAnalyser();
-          analyser.fftSize = 512; analyser.smoothingTimeConstant = .68;
-          const source = context.createMediaElementSource(element);
-          source.connect(analyser); analyser.connect(context.destination);
-          contextRef.current = context; analyserRef.current = analyser; sourceRef.current = source;
-        }
-        if (contextRef.current?.state === "suspended") await contextRef.current.resume();
+        await ensureAudioGraph(element);
         await element.play();
       } catch { try { await element.play(); } catch { setError("Playback failed. Choose another track."); } }
     } else element.pause();
