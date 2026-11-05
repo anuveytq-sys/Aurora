@@ -253,7 +253,7 @@ export default function App() {
     fetchSyncedLyrics(item).then(result => {
       if (requestId !== lyricRequestRef.current) return;
       setLyrics(result.rows);
-      setLyricsStatus(result.rows.length ? (result.estimated ? "estimated" : "ready") : "missing");
+      setLyricsStatus(result.rows.length ? "ready" : "missing");
     }).catch(() => {
       if (requestId === lyricRequestRef.current) setLyricsStatus("missing");
     });
