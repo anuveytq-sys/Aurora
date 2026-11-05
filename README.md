@@ -22,8 +22,10 @@ AURORA is designed to feel almost empty until you summon its library: a dark atm
 ### Stage 3 — Dynamic music environment
 - Ambient theme palette changes when the selected track changes.
 - Track artwork, title and creator appear in the minimal player.
-- Animated orbital centerpiece and animated visualizer modes that respond to playback state.
-- Lyric Constellation visual mode entry point. It currently explains the licensing limitation; it does not display copyrighted lyric text. A full synchronized-lyrics feature requires a provider and rights that permit display and synchronization.
+- Animated orbital centerpiece with album-art-derived ambient colours.
+- Live audio-spectrum visualizer using the Web Audio analyser when the browser and stream permit audio analysis; Orbit and Wave layouts remain available, with CSS animation as a graceful fallback.
+- Compact persistent transport with artwork, title, creator, seek, volume, previous/next and playback status while the discovery dock is closed.
+- Lyric Constellation: an animated, track-labelled constellation visual that accompanies playback without displaying unlicensed lyric text.
 
 ### Stage 4 — Product polish and local release
 - Further accessibility, settings, error handling, performance and browser compatibility work.
@@ -34,7 +36,8 @@ AURORA is designed to feel almost empty until you summon its library: a dark atm
 - Audius is an open music catalogue, not a universal catalogue of all commercial releases. Some requested songs will not be available.
 - Audius read-only endpoints are documented for search, trending and streaming. Basic reads do not require an API key, but higher rate limits may require one.
 - Lyrics are not bundled with the music stream. AURORA does not scrape lyric websites or reproduce copyrighted lyrics. A licensed lyrics integration is a separate requirement.
-- The current visualizer animates with playback state; it is not yet a calibrated beat detector or a word-by-word lyric synchronizer.
+- Audio-spectrum animation reflects measured frequency energy when Web Audio access is available; it is a visualizer, not a calibrated beat detector.
+- Lyric Constellation is a visual experience, not a lyric feed. Word-by-word synchronized lyrics still require a licensed provider and display/synchronization rights.
 
 ## Technology
 - React + Vite
@@ -54,4 +57,4 @@ Open the local URL printed by Vite. Search for a song or artist, select a result
 
 ## Verification status
 
-Stage 2 and Stage 3 source changes are on the `stage-2-audius-stage-3-visuals` branch. They have not yet been installed, built, or browser-tested in this environment. Verify with `npm install` and `npm run build`, then test actual track playback in a browser.
+Stage 2 and Stage 3 source changes are committed to `main`. The repository CI workflow runs `npm install` and `npm run build` for pushes and pull requests. Actual browser playback and stream-specific Web Audio analysis still require a local browser check.
