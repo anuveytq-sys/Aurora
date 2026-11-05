@@ -2,7 +2,7 @@
 
 **A minimal, cinematic music player for discovering and playing open-catalogue music.**
 
-AURORA is designed to feel almost empty until you summon its library: a dark atmospheric space, orbital motion, artwork-led ambient colours, and a compact player.
+AURORA is designed to stay almost empty: a dark atmospheric space, a thin audio-reactive screen boundary, and a connected star constellation. The song chooser lives behind one small top-left control.
 
 ## Four-stage roadmap
 
@@ -57,4 +57,4 @@ Open the local URL printed by Vite. Search for a song or artist, select a result
 
 ## Verification status
 
-Stage 2 and Stage 3 source changes are committed to `main`. The repository CI workflow runs `npm install` and `npm run build` for pushes and pull requests. Actual browser playback and stream-specific Web Audio analysis still require a local browser check.
+The minimal listening-view redesign and expanded Audius discovery are committed to `main`. CI runs `npm install` and `npm run build` for each commit. Actual browser playback, border response, and stream-specific Web Audio analysis still require a browser check.
