@@ -113,9 +113,104 @@ function parseLyricsFile(source) {
     .map(row => ({ ...row, words: row.words.filter(w => w.text && Number.isFinite(w.at)).sort((x,y) => x.at-y.at) }))
     .sort((x,y) => x.at-y.at);
 }
+function normalizeLiriQoCandidate(candidate, response) {
+  if (!candidate || typeof candidate !== "object") return null;
+  const meta = response?.metadata || {};
+  const title = candidate.title || candidate.trackName || meta.title || "";
+  const artistName = candidate.artist || candidate.artistName || meta.artist || "";
+  if (title && cleanMatch(title) !== cleanMatch(meta.title || title)) return null;
+  if (artistName && meta.artist && artistMatchScore(artistName, meta.artist) < .55) return null;
+
+  const timed = Array.isArray(candidate.timed) ? candidate.timed : [];
+  const wordMap = candidate.words && typeof candidate.words === "object" ? candidate.words : {};
+  const rows = timed.map((line, index) => {
+    const rawWords = Array.isArray(line.words) ? line.words : (Array.isArray(wordMap[line.id]) ? wordMap[line.id] : []);
+    const words = rawWords.map(word => ({
+      text: String(word.text || "").trim(),
+      at: Number(word.start) / 1000,
+      end: Number(word.end) / 1000
+    })).filter(word => word.text && Number.isFinite(word.at))
+      .sort((a, b) => a.at - b.at);
+    return {
+      at: Number(line.start) / 1000,
+      end: Number(line.end) / 1000,
+      text: String(line.text || words.map(word => word.text).join("")).trim(),
+      words
+    };
+  }).filter(line => Number.isFinite(line.at) && line.text)
+    .sort((a, b) => a.at - b.at);
+
+  const hasNativeWordTiming = rows.some(line => line.words.length > 0) &&
+    (candidate.nativeWordTiming === true || candidate.nativeRichsync === true ||
+      candidate.syncLevel === "word" || candidate.syncLevel === "syllable" ||
+      rows.some(line => line.words.length > 0));
+  if (!hasNativeWordTiming) return null;
+  return {
+    rows,
+    wordSynced: true,
+    estimated: false,
+    source: candidate.upstreamProvider || candidate.provider || "LiriQo"
+  };
+}
+
+async function fetchLiriQoWordLyrics(item) {
+  const params = new URLSearchParams({
+    title: item.title || "",
+    artist: artist(item),
+    ...(item.albumName ? { album: item.albumName } : {}),
+    ...(item.duration > 0 && item.duration < 3600 ? { duration: String(Math.round(item.duration)) } : {})
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await fetch("https://api.liriqo-alfarrizi.my.id/v1/lyrics?" + params.toString(), {
+      signal: controller.signal,
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    if (payload?.error || !payload?.primary && !Array.isArray(payload?.tracks)) return null;
+
+    const candidates = [];
+    if (payload.primary) candidates.push(payload.primary);
+    if (Array.isArray(payload.tracks)) candidates.push(...payload.tracks);
+    const unique = [...new Set(candidates)];
+    const ranked = unique.sort((a, b) => {
+      const score = value => value?.syncLevel === "syllable" ? 3 :
+        value?.syncLevel === "word" || value?.nativeWordTiming === true || value?.nativeRichsync === true ? 2 : 0;
+      return score(b) - score(a);
+    });
+    for (const candidate of ranked) {
+      const result = normalizeLiriQoCandidate(candidate, payload);
+      if (result?.rows?.length) return result;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchSyncedLyrics(item) {
-  const key = cleanMatch(item.title) + "|" + cleanMatch(artist(item));
+  const key = [
+    cleanMatch(item.title),
+    cleanMatch(artist(item)),
+    cleanMatch(item.albumName),
+    Math.round(Number(item.duration || 0))
+  ].join("|");
   if (lyricCache.has(key)) return lyricCache.get(key);
+
+  // First ask a multi-provider aggregator for native word/syllable timestamps.
+  // This is the only path that can produce genuine word-by-word synchronization.
+  const rich = await fetchLiriQoWordLyrics(item);
+  if (rich) {
+    lyricCache.set(key, rich);
+    return rich;
+  }
+
+  // LRCLIB remains the fallback for verified line-timed lyrics. It does not
+  // provide native word timing for legacy LRC records.
   const titleKey = cleanMatch(item.title);
   const artistScore = value => artistMatchScore(value, artist(item));
   const usable = record => {
@@ -123,10 +218,11 @@ async function fetchSyncedLyrics(item) {
     const wordRows = record.hasWordSync ? parseLyricsFile(record.lyricsfile) : [];
     const rows = wordRows.length ? wordRows : parseLrc(record.syncedLyrics);
     if (!rows.length) return null;
-    const result = { rows, wordSynced: wordRows.some(row => row.words.length), estimated: false };
+    const result = { rows, wordSynced: wordRows.some(row => row.words.length), estimated: false, source: "LRCLIB" };
     lyricCache.set(key, result);
     return result;
   };
+
   const params = new URLSearchParams({
     track_name: item.title || "",
     artist_name: artist(item),
@@ -138,6 +234,7 @@ async function fetchSyncedLyrics(item) {
     const result = usable(record);
     if (result) return result;
   } catch {}
+
   const queries = [
     new URLSearchParams({ track_name: item.title || "", artist_name: artist(item) }),
     new URLSearchParams({ track_name: item.title || "" }),
@@ -149,12 +246,12 @@ async function fetchSyncedLyrics(item) {
       if (!Array.isArray(matches)) continue;
       const candidates = matches
         .filter(row => cleanMatch(row.trackName || row.name) === titleKey && artistScore(row.artistName) >= .55)
-        .sort((x, y) => {
-          const wordA = x.hasWordSync ? 1 : 0, wordB = y.hasWordSync ? 1 : 0;
-          const albumA = cleanMatch(x.albumName) === cleanMatch(item.albumName) ? 1 : 0;
-          const albumB = cleanMatch(y.albumName) === cleanMatch(item.albumName) ? 1 : 0;
-          const durationA = item.duration ? Math.abs(Number(x.duration || 0) - item.duration) : 0;
-          const durationB = item.duration ? Math.abs(Number(y.duration || 0) - item.duration) : 0;
+        .sort((a, b) => {
+          const wordA = a.hasWordSync ? 1 : 0, wordB = b.hasWordSync ? 1 : 0;
+          const albumA = cleanMatch(a.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+          const albumB = cleanMatch(b.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+          const durationA = item.duration ? Math.abs(Number(a.duration || 0) - item.duration) : 0;
+          const durationB = item.duration ? Math.abs(Number(b.duration || 0) - item.duration) : 0;
           return wordB - wordA || albumB - albumA || durationA - durationB;
         });
       for (const candidate of candidates) {
@@ -165,6 +262,7 @@ async function fetchSyncedLyrics(item) {
   }
   return { rows: [], wordSynced: false, estimated: false };
 }
+
 function cataloguePath(query, genre, offset) {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), app_name: APP_NAME, sort_method: "popular" });
   if (query.trim()) params.set("query", query.trim());
