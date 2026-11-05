@@ -6,7 +6,7 @@ const API="https://api.audius.co/v1", APP_NAME="AURORA", STORAGE="aurora.audius.
 const palettes=[["#d79a58","#a85c35","#29170f"],["#8b9bd8","#3d4c88","#10162d"],["#65b8aa","#246c68","#0b2423"],["#c77b9e","#713d65","#24101e"],["#d3c078","#80713b","#25200e"],["#8aa5ba","#425f79","#111d2b"]];
 const genres=["All","Electronic","Hip-Hop/Rap","Pop","Rock","Ambient","Classical","Jazz","House","Techno"];
 const stars=Array.from({length:34},(_,i)=>({id:i,x:5+(i*37.17)%90,y:8+(i*61.73)%82}));
-const links=Array.from({length:46},(_,i)=>[i,(i*7+5)%34]).filter(([a,b])=>a!==b);
+const links=Array.from({length:46},(_,i)=>[i%stars.length,(i*7+5)%stars.length]).filter(([a,b])=>a!==b);
 const art=t=>t?.artwork?.["1000x1000"]||t?.artwork?.["480x480"]||t?.artwork?.["150x150"]||"";
 const time=s=>Math.floor((s||0)/60)+":"+String(Math.floor((s||0)%60)).padStart(2,"0");
 async function api(path){const r=await fetch(API+path);if(!r.ok)throw new Error(r.status===429?"Music catalogue is busy. Try again shortly.":"Music catalogue unavailable.");const j=await r.json();return j.data||[]}
