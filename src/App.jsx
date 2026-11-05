@@ -13,8 +13,6 @@ const stars = Array.from({ length: 115 }, (_, index) => ({
 
 export default function App() {
   const [dockOpen, setDockOpen] = useState(true);
-  const [spotifyUrl, setSpotifyUrl] = useState("");
-  const [embedUrl, setEmbedUrl] = useState("");
   const [notice, setNotice] = useState("Your music universe is ready");
 
   useEffect(() => {
@@ -75,7 +73,7 @@ export default function App() {
         </motion.div>
         <motion.div className="welcome-copy" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}>
           <span className="eyebrow"><Sparkles size={12} /> YOUR PERSONAL SOUND UNIVERSE</span>
-          <h1>Enter the <em>未知</em></h1>
+          <h1>Enter the <em>unknown.</em></h1>
           <p>A quieter space. A deeper connection to sound.</p>
           <button className="launch-button" onClick={() => setDockOpen(true)}>
             <Music2 size={15} /> OPEN MUSIC DOCK <span>↗</span>
@@ -127,20 +125,14 @@ export default function App() {
                   <span className="eyebrow">CONNECT YOUR SOUND</span>
                   <h2>Your next<br /><em>dimension.</em></h2>
                   <p>Connect a Spotify track, album or playlist using its share link. Spotify playback will be added in Stage 2.</p>
-                  <form className="spotify-form" onSubmit={loadSpotifyEmbed}>
-                    <label htmlFor="spotify-link">SPOTIFY CONTENT LINK</label>
-                    <div className="link-input"><input id="spotify-link" value={spotifyUrl} onChange={(e) => setSpotifyUrl(e.target.value)} placeholder="Paste a Spotify link…" /><button type="submit" aria-label="Prepare Spotify link"><ExternalLink size={16} /></button></div>
-                  </form>
+                  <div className="stage-preview">
+                    <span className="stage-preview-icon"><Music2 size={17} /></span>
+                    <div><strong>SPOTIFY CONNECTION</strong><small>OFFICIAL EMBED INTEGRATION ARRIVES IN STAGE 02</small></div>
+                  </div>
                   <div className="portal-note"><span className="status-light" /> SPOTIFY INTEGRATION: STAGE 02</div>
                 </div>
               </div>
 
-              {embedUrl && (
-                <div className="embed-preview">
-                  <div className="embed-label"><span>PREPARED SPOTIFY EMBED</span><button onClick={() => setEmbedUrl("")} aria-label="Clear embed"><X size={14} /></button></div>
-                  <iframe title="Spotify content preview" src={embedUrl} width="100%" height="152" frameBorder="0" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy" />
-                </div>
-              )}
               <div className="dock-footer"><span> <span className="footer-dot" /> SECURE LOCAL INTERFACE</span><span>AURORA / 001 <Maximize2 size={11} /></span></div>
             </motion.section>
           </motion.div>
