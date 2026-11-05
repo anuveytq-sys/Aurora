@@ -55,65 +55,73 @@ async function appleSearch(term) {
 }
 const lyricCache = new Map();
 const cleanMatch = value => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-async function lyricRequest(url, timeoutMs = 4500) {
+async function lyricRequest(url, timeoutMs = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: "application/json", "Lrclib-Client": "AURORA/1.0 (https://github.com/anuveytq-sys/Aurora)" }
+    });
     if (!response.ok) return null;
     return await response.json();
   } finally { clearTimeout(timer); }
 }
-function approximateLrc(plainLyrics, duration) {
-  const lines = String(plainLyrics || "").split(/\r?\n/).map(line => line.trim()).filter(line => line && !/^\[.*\]$/.test(line));
-  if (!lines.length) return [];
-  const total = Math.max(45, Number(duration) || 210);
-  return lines.map((text, index) => ({ at: (index / Math.max(1, lines.length)) * total, text, estimated: true }));
-}
 async function fetchSyncedLyrics(item) {
   const key = cleanMatch(item.title) + "|" + cleanMatch(artist(item));
   if (lyricCache.has(key)) return lyricCache.get(key);
+  const titleKey = cleanMatch(item.title);
+  const artistKey = cleanMatch(artist(item));
+  const exactArtist = value => {
+    const candidate = cleanMatch(value);
+    return !!candidate && !!artistKey && (
+      candidate === artistKey || candidate.startsWith(artistKey) || artistKey.startsWith(candidate)
+    );
+  };
+  const usable = record => {
+    if (!record?.syncedLyrics || cleanMatch(record.trackName) !== titleKey || !exactArtist(record.artistName)) return null;
+    const rows = parseLrc(record.syncedLyrics);
+    if (!rows.length) return null;
+    const result = { rows, estimated: false };
+    lyricCache.set(key, result);
+    return result;
+  };
+
+  // Exact signature lookup, followed by indexed search if no verified match.
   const params = new URLSearchParams({
     track_name: item.title || "",
     artist_name: artist(item),
     ...(item.albumName ? { album_name: item.albumName } : {}),
-    ...(item.duration ? { duration: String(Math.round(item.duration)) } : {})
+    ...(item.duration > 0 ? { duration: String(Math.round(item.duration)) } : {})
   });
   try {
-    const record = await lyricRequest(LYRICS_API + "/get?" + params.toString());
-    if (record?.syncedLyrics) {
-      const result = { rows: parseLrc(record.syncedLyrics), estimated: false };
-      if (result.rows.length) { lyricCache.set(key, result); return result; }
-    }
+    const record = await lyricRequest(LYRICS_API + "/get?" + params.toString(), 10000);
+    const result = usable(record);
+    if (result) return result;
   } catch {}
+
   try {
     const searchParams = new URLSearchParams({ track_name: item.title || "", artist_name: artist(item) });
-    const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString());
+    const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString(), 8000);
     if (Array.isArray(matches)) {
-      const titleKey = cleanMatch(item.title);
-      const artistKey = cleanMatch(artist(item));
-      const ranked = matches.map(row => {
-        const title = cleanMatch(row.trackName);
-        const who = cleanMatch(row.artistName);
-        const titleExact = title === titleKey;
-        const artistExact = who === artistKey;
-        const artistRelated = who.includes(artistKey) || artistKey.includes(who);
-        return { row, titleExact, artistExact, artistRelated, score: (titleExact ? 4 : 0) + (artistExact ? 4 : artistRelated ? 2 : 0) + (row.syncedLyrics ? 2 : 0) + (row.plainLyrics ? 1 : 0) };
-      }).filter(x => x.titleExact && (x.artistExact || x.artistRelated)).sort((a,b) => b.score-a.score);
-      const match = ranked[0]?.row;
-      if (match?.syncedLyrics) {
-        const result = { rows: parseLrc(match.syncedLyrics), estimated: false };
-        if (result.rows.length) { lyricCache.set(key, result); return result; }
-      }
-      if (match?.plainLyrics) {
-        const result = { rows: approximateLrc(match.plainLyrics, item.duration), estimated: true };
-        if (result.rows.length) { lyricCache.set(key, result); return result; }
+      const candidates = matches
+        .filter(row => cleanMatch(row.trackName) === titleKey && exactArtist(row.artistName) && row.syncedLyrics)
+        .sort((a, b) => {
+          const albumA = cleanMatch(a.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+          const albumB = cleanMatch(b.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+          const durationA = item.duration ? Math.abs(Number(a.duration || 0) - item.duration) : 0;
+          const durationB = item.duration ? Math.abs(Number(b.duration || 0) - item.duration) : 0;
+          return albumB - albumA || durationA - durationB;
+        });
+      for (const candidate of candidates) {
+        const result = usable(candidate);
+        if (result) return result;
       }
     }
   } catch {}
-  const empty = { rows: [], estimated: false };
-  lyricCache.set(key, empty);
-  return empty;
+
+  // Never manufacture timestamps from plain lyrics: that causes false sync.
+  return { rows: [], estimated: false };
 }
 function cataloguePath(query, genre, offset) {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), app_name: APP_NAME, sort_method: "popular" });
@@ -123,16 +131,22 @@ function cataloguePath(query, genre, offset) {
 }
 function parseLrc(source) {
   const rows = [];
-  for (const raw of source.split(/\r?\n/)) {
+  const lines = String(source || "").split(/\r?\n/);
+  const offsetLine = lines.find(line => /^\[offset:\s*-?\d+\s*\]/i.test(line));
+  const offsetMatch = offsetLine?.match(/^\[offset:\s*(-?\d+)\s*\]/i);
+  const offsetSeconds = offsetMatch ? Number(offsetMatch[1]) / 1000 : 0;
+  for (const raw of lines) {
     const matches = [...raw.matchAll(/\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g)];
     const text = raw.replace(/\[[^\]]+\]/g, "").trim();
     if (!text || !matches.length) continue;
     for (const match of matches) {
-      const fraction = Number("0." + (match[3] || "0"));
-      rows.push({ at: Number(match[1]) * 60 + Number(match[2]) + fraction, text });
+      const digits = match[3] || "0";
+      const fraction = Number(digits) / Math.pow(10, digits.length);
+      const at = Math.max(0, Number(match[1]) * 60 + Number(match[2]) + fraction + offsetSeconds);
+      rows.push({ at, text });
     }
   }
-  return rows.sort((a, b) => a.at - b.at);
+  return rows.sort((a, b) => a.at - b.at).filter((row, index, all) => index === 0 || row.at > all[index - 1].at);
 }
 
 export default function App() {
@@ -336,16 +350,10 @@ export default function App() {
   }, [lyrics, currentTime]);
   const activeWords = useMemo(() => {
     if (activeLyric < 0) return [];
-    const line = lyrics[activeLyric];
-    const words = line.text.split(/\s+/).filter(Boolean).slice(0, 18);
-    if (words.length <= 1) return words;
-    const nextAt = lyrics[activeLyric + 1]?.at;
-    const fallbackEnd = Math.min(Number(audio.current?.duration) || line.at + 4, line.at + Math.max(2.4, words.length * .42));
-    const end = nextAt && nextAt > line.at ? nextAt : fallbackEnd;
-    const progress = Math.max(0, Math.min(.999, (currentTime - line.at) / Math.max(.6, end - line.at)));
-    const count = Math.max(1, Math.min(words.length, Math.floor(progress * words.length) + 1));
-    return words.slice(0, count);
-  }, [lyrics, activeLyric, currentTime]);
+    // Standard LRC syncs complete lines, not individual words. Show the full
+    // line at its actual timestamp rather than inventing word timings.
+    return lyrics[activeLyric].text.split(/\s+/).filter(Boolean).slice(0, 18);
+  }, [lyrics, activeLyric]);
 
   function onLyricFile(event) {
     const file = event.target.files?.[0];
