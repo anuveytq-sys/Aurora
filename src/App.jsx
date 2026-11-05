@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AudioLines, ChevronDown, Disc3, Maximize2, Music2, Orbit, Sparkles } from "lucide-react";
+import { AudioLines, ChevronDown, Disc3, ExternalLink, Link2, Orbit, Play, X } from "lucide-react";
 
+const STORAGE_KEY = "aurora.spotify.content.v1";
 const stars = Array.from({ length: 115 }, (_, index) => ({
   id: index,
   left: (index * 37.17) % 100,
@@ -11,9 +12,46 @@ const stars = Array.from({ length: 115 }, (_, index) => ({
   size: index % 9 === 0 ? 3 : index % 4 === 0 ? 2 : 1
 }));
 
+function parseSpotifyLink(value) {
+  const input = value.trim();
+  const uriMatch = input.match(/^spotify:(track|album|playlist|artist|show|episode):([a-zA-Z0-9]+)$/);
+  if (uriMatch) return { type: uriMatch[1], id: uriMatch[2] };
+
+  try {
+    const url = new URL(input);
+    if (!["open.spotify.com", "www.open.spotify.com"].includes(url.hostname)) return null;
+    const parts = url.pathname.split("/").filter(Boolean);
+    const offset = parts[0] === "intl-en" || parts[0]?.startsWith("intl-") ? 1 : 0;
+    const type = parts[offset];
+    const id = parts[offset + 1];
+    if (!["track", "album", "playlist", "artist", "show", "episode"].includes(type)) return null;
+    if (!id || !/^[a-zA-Z0-9]+$/.test(id)) return null;
+    return { type, id };
+  } catch {
+    return null;
+  }
+}
+
+function embedUrl(content) {
+  return content ? `https://open.spotify.com/embed/${content.type}/${content.id}?utm_source=generator&theme=0` : "";
+}
+
 export default function App() {
   const [dockOpen, setDockOpen] = useState(true);
-  const notice = "Your music universe is ready";
+  const [linkInput, setLinkInput] = useState("");
+  const [content, setContent] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+      return saved && ["track", "album", "playlist", "artist", "show", "episode"].includes(saved.type) && /^[a-zA-Z0-9]+$/.test(saved.id) ? saved : null;
+    } catch {
+      return null;
+    }
+  });
+  const [error, setError] = useState("");
+  const [isPasting, setIsPasting] = useState(false);
+  const [playerExpanded, setPlayerExpanded] = useState(true);
+
+  const iframeSrc = useMemo(() => embedUrl(content), [content]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -26,6 +64,47 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (content) localStorage.setItem(STORAGE_KEY, JSON.stringify(content));
+    else localStorage.removeItem(STORAGE_KEY);
+  }, [content]);
+
+  const connectContent = (event) => {
+    event.preventDefault();
+    const parsed = parseSpotifyLink(linkInput);
+    if (!parsed) {
+      setError("Paste a valid Spotify share link or URI.");
+      return;
+    }
+    setContent(parsed);
+    setError("");
+    setPlayerExpanded(true);
+    setLinkInput("");
+  };
+
+  const pasteLink = async () => {
+    if (!navigator.clipboard?.readText) {
+      setError("Clipboard access is unavailable. Paste your link into the field.");
+      return;
+    }
+    try {
+      setIsPasting(true);
+      const pasted = await navigator.clipboard.readText();
+      setLinkInput(pasted);
+      setError("");
+    } catch {
+      setError("Clipboard permission was not granted. Paste your link manually.");
+    } finally {
+      setIsPasting(false);
+    }
+  };
+
+  const clearContent = () => {
+    setContent(null);
+    setError("");
+    setPlayerExpanded(true);
+  };
 
   return (
     <main className="universe">
@@ -45,11 +124,11 @@ export default function App() {
 
       <header className="topbar">
         <a className="brand" href="#home" aria-label="Aurora home">
-          <span className="brand-mark"><Orbit size={17} /></span>
+          <span className="brand-mark"><Orbit size={16} /></span>
           <span>AURORA<span className="brand-dot">.</span></span>
         </a>
-        <div className="system-status"><span className="status-light" /> SYSTEM ONLINE <i /> LOCAL ENVIRONMENT</div>
-        <button className="top-icon" onClick={() => setDockOpen((open) => !open)} aria-label="Toggle music dock">
+        <div className="system-status"><span className="status-light" /> {content ? "SIGNAL CONNECTED" : "AWAITING SIGNAL"}</div>
+        <button className="top-icon" onClick={() => setDockOpen((open) => !open)} aria-label="Toggle music interface">
           <AudioLines size={17} />
         </button>
       </header>
@@ -57,22 +136,21 @@ export default function App() {
       <section className="center-stage" id="home">
         <div className="orbital orbital-a" />
         <div className="orbital orbital-b" />
-        <motion.div className="core-emblem" animate={{ rotate: 360 }} transition={{ duration: 90, repeat: Infinity, ease: "linear" }}>
-          <div className="core-inner"><Disc3 size={34} strokeWidth={1.1} /></div>
-        </motion.div>
-        <motion.div className="welcome-copy" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}>
-          <span className="eyebrow"><Sparkles size={12} /> YOUR PERSONAL SOUND UNIVERSE</span>
-          <h1>Enter the <em>unknown.</em></h1>
-          <p>A quieter space. A deeper connection to sound.</p>
-          <button className="launch-button" onClick={() => setDockOpen(true)}>
-            <Music2 size={15} /> OPEN MUSIC DOCK <span>↗</span>
-          </button>
+        <motion.button className={`core-emblem ${content ? "is-active" : ""}`}
+          onClick={() => setDockOpen(true)} aria-label="Open Aurora music interface"
+          whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.96 }}>
+          <motion.div className="core-inner" animate={{ rotate: 360 }} transition={{ duration: 34, repeat: Infinity, ease: "linear" }}>
+            <Disc3 size={35} strokeWidth={1.05} />
+          </motion.div>
+        </motion.button>
+        <motion.div className="center-hint" initial={{ opacity: 0 }} animate={{ opacity: 0.68 }} transition={{ delay: 1 }}>
+          {content ? "SOUND IS IN MOTION" : "TOUCH THE ORBIT"}
         </motion.div>
       </section>
 
       <footer className="bottom-bar">
-        <div><span className="tiny-pulse" /> {notice}</div>
-        <div className="shortcut">DOCK <kbd>CTRL</kbd> + <kbd>K</kbd><span className="footer-divider" /> ESC TO COLLAPSE</div>
+        <div><span className="tiny-pulse" /> {content ? "AUDIO PORTAL READY" : "A QUIETER KIND OF INFINITY"}</div>
+        <div className="shortcut"><kbd>CTRL</kbd> + <kbd>K</kbd><span className="footer-divider" /> <kbd>ESC</kbd></div>
       </footer>
 
       <AnimatePresence>
@@ -82,47 +160,101 @@ export default function App() {
             animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
             exit={{ opacity: 0, scale: 0.55, x: -14, y: -10 }}
             transition={{ type: "spring", stiffness: 330, damping: 25 }}
-            aria-label="Reopen music dock">
+            aria-label="Reopen music interface">
             <span className="mini-orbit"><AudioLines size={17} /></span>
             <span className="mini-eq"><i /><i /><i /><i /></span>
           </motion.button>
         )}
       </AnimatePresence>
 
+      {/* Keep the official Spotify iframe mounted when the visual dock is collapsed. */}
+      {content && (
+        <div className={`persistent-player ${dockOpen && playerExpanded ? "player-visible" : "player-hidden"}`}>
+          <iframe
+            title="Spotify official embedded player"
+            src={iframeSrc}
+            width="100%"
+            height={content.type === "track" || content.type === "episode" ? "152" : "352"}
+            frameBorder="0"
+            allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+            loading="eager"
+            allowFullScreen
+          />
+        </div>
+      )}
+
       <AnimatePresence>
         {dockOpen && (
           <motion.div className="dock-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <motion.section className="music-dock"
+            <motion.section className={`music-dock ${content && playerExpanded ? "music-dock-player" : ""}`}
               initial={{ opacity: 0, scale: 0.82, y: 35, filter: "blur(12px)" }}
               animate={{ opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }}
               exit={{ opacity: 0, scale: 0.72, y: -22, filter: "blur(8px)" }}
               transition={{ type: "spring", stiffness: 190, damping: 23 }}
-              role="dialog" aria-modal="false" aria-label="Aurora music dock">
+              role="dialog" aria-modal="false" aria-label="Aurora music interface">
               <div className="dock-edge" />
               <div className="dock-heading">
-                <div className="dock-title"><span className="dock-symbol"><AudioLines size={17} /></span><div><strong>MUSIC INTERFACE</strong><small>STREAMING PORTAL <b>•</b> STAGE 01</small></div></div>
-                <button className="close-button" onClick={() => setDockOpen(false)} aria-label="Collapse dock"><ChevronDown size={19} /></button>
+                <div className="dock-title"><span className="dock-symbol"><AudioLines size={17} /></span><div><strong>AURORA</strong><small>PERSONAL SOUND PORTAL</small></div></div>
+                <button className="close-button" onClick={() => setDockOpen(false)} aria-label="Collapse interface"><ChevronDown size={19} /></button>
               </div>
 
-              <div className="dock-body">
-                <div className="portal-art">
-                  <div className="art-ring ring-one" /><div className="art-ring ring-two" />
-                  <div className="art-core"><Disc3 size={48} strokeWidth={0.8} /></div>
-                  <span className="art-caption">A U R O R A <i /> AUDIO PORTAL</span>
-                </div>
-                <div className="portal-content">
-                  <span className="eyebrow">CONNECT YOUR SOUND</span>
-                  <h2>Your next<br /><em>dimension.</em></h2>
-                  <p>Connect a Spotify track, album or playlist using its share link. Spotify playback will be added in Stage 2.</p>
-                  <div className="stage-preview">
-                    <span className="stage-preview-icon"><Music2 size={17} /></span>
-                    <div><strong>SPOTIFY CONNECTION</strong><small>OFFICIAL EMBED INTEGRATION ARRIVES IN STAGE 02</small></div>
+              {!content ? (
+                <div className="connect-view">
+                  <motion.div className="portal-art" animate={{ rotate: [0, 1.5, 0, -1.5, 0] }} transition={{ duration: 16, repeat: Infinity, ease: "easeInOut" }}>
+                    <div className="art-ring ring-one" /><div className="art-ring ring-two" />
+                    <div className="art-core"><Disc3 size={48} strokeWidth={0.8} /></div>
+                  </motion.div>
+                  <div className="connect-controls">
+                    <span className="eyebrow">CONNECT A FREQUENCY</span>
+                    <form className="spotify-form" onSubmit={connectContent}>
+                      <div className="link-input">
+                        <Link2 size={15} />
+                        <input aria-label="Spotify share link" value={linkInput} onChange={(event) => { setLinkInput(event.target.value); setError(""); }}
+                          placeholder="Paste a Spotify link or URI" autoComplete="off" spellCheck="false" />
+                        <button type="button" onClick={pasteLink} disabled={isPasting} aria-label="Paste from clipboard">{isPasting ? "…" : "PASTE"}</button>
+                      </div>
+                      <button className="connect-button" type="submit" disabled={!linkInput.trim()}><Play size={13} fill="currentColor" /> CONNECT</button>
+                    </form>
+                    {error && <p className="form-error" role="alert">{error}</p>}
+                    <p className="support-note">TRACKS · ALBUMS · PLAYLISTS · ARTISTS · SHOWS</p>
                   </div>
-                  <div className="portal-note"><span className="status-light" /> SPOTIFY INTEGRATION: STAGE 02</div>
                 </div>
-              </div>
+              ) : (
+                <div className="connected-view">
+                  <div className="connected-topline">
+                    <span className="eyebrow"><span className="status-light" /> SPOTIFY SIGNAL ESTABLISHED</span>
+                    <button className="text-icon-button" onClick={clearContent} aria-label="Disconnect current Spotify content"><X size={14} /></button>
+                  </div>
+                  <div className="embed-shell">
+                    <div className="embed-label"><span>{content.type.toUpperCase()} STREAM</span><span>SPOTIFY OFFICIAL PLAYER</span></div>
+                    <div className="player-frame">
+                      <iframe
+                        title="Spotify official embedded player"
+                        src={iframeSrc}
+                        width="100%"
+                        height={content.type === "track" || content.type === "episode" ? "152" : "352"}
+                        frameBorder="0"
+                        allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+                        loading="eager"
+                        allowFullScreen
+                      />
+                    </div>
+                  </div>
+                  <div className="connected-actions">
+                    <button className="text-icon-button" onClick={() => setPlayerExpanded((expanded) => !expanded)}>
+                      {playerExpanded ? "COLLAPSE PLAYER" : "SHOW PLAYER"}
+                    </button>
+                    <a className="spotify-open" href={`https://open.spotify.com/${content.type}/${content.id}`} target="_blank" rel="noreferrer">OPEN IN SPOTIFY <ExternalLink size={12} /></a>
+                  </div>
+                  <form className="change-link-form" onSubmit={connectContent}>
+                    <input aria-label="Replace Spotify link" value={linkInput} onChange={(event) => { setLinkInput(event.target.value); setError(""); }} placeholder="Replace with another Spotify link" />
+                    <button type="submit" disabled={!linkInput.trim()} aria-label="Load new Spotify link"><Play size={13} /></button>
+                  </form>
+                  {error && <p className="form-error" role="alert">{error}</p>}
+                </div>
+              )}
 
-              <div className="dock-footer"><span> <span className="footer-dot" /> SECURE LOCAL INTERFACE</span><span>AURORA / 001 <Maximize2 size={11} /></span></div>
+              <div className="dock-footer"><span><span className="footer-dot" /> LOCAL-FIRST / NO API KEY</span><span> AURORA / 002 <Orbit size={11} /></span></div>
             </motion.section>
           </motion.div>
         )}
