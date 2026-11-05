@@ -541,20 +541,16 @@ export default function App() {
   const activeWords = useMemo(() => {
     if (activeLyric < 0) return [];
     const row = lyrics[activeLyric];
-    const words = row.text.split(/\s+/).filter(Boolean).slice(0, 18);
-    if (row.words?.length) {
-      return row.words.slice(0, 18)
-        .filter(word => word.at <= currentTime + .015)
-        .map((word, index) => ({ text: word.text.trim(), index, live: currentTime <= (word.end ?? word.at + .45) }));
-    }
-    // LRC timestamps are line-level. Animate each word within that line's
-    // timestamp window; this is an interpolation, not source-provided word sync.
-    const nextAt = lyrics[activeLyric + 1]?.at;
-    const gap = Number.isFinite(nextAt) ? Math.max(.35, nextAt - row.at) : 3.2;
-    const displayWindow = Math.min(gap, Math.max(1.25, words.length * .28));
-    const elapsed = Math.max(0, currentTime - row.at);
-    const count = Math.min(words.length, Math.max(1, Math.floor(elapsed / (displayWindow / Math.max(1, words.length))) + 1));
-    return words.slice(0, count).map((text, index) => ({ text, index, live: index === count - 1 }));
+    // Only render words that arrive with real per-word timestamps from a
+    // word-sync source. Never invent word positions from line-level LRC.
+    if (!Array.isArray(row.words) || !row.words.length) return [];
+    return row.words.slice(0, 18)
+      .filter(word => Number.isFinite(word.at) && word.at <= currentTime + .015)
+      .map((word, index) => ({
+        text: word.text.trim(),
+        index,
+        live: currentTime <= (word.end ?? word.at + .45)
+      }));
   }, [lyrics, activeLyric, currentTime]);
 
   function onLyricFile(event) {
@@ -580,14 +576,14 @@ export default function App() {
     <svg className="star-web" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><g>{links.map(([a, b], i) => <line key={i} x1={stars[a].x} y1={stars[a].y} x2={stars[b].x} y2={stars[b].y} style={{ "--line-delay": (i % 9) * .17 + "s" }} />)}</g><g>{stars.map(s => <circle key={s.id} cx={s.x} cy={s.y} r={s.id % 5 === 0 ? .16 : .1} />)}</g></svg>
 
     <div className="lyric-constellation" aria-live="polite">
-      {lyrics.length > 0 && activeLyric >= 0 ? <>
+      {lyrics.length > 0 && activeLyric >= 0 && lyrics[activeLyric]?.words?.length ? <>
         <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyrics.some(row => row.words?.length) ? "WORD-SYNCED LYRIC CONSTELLATION" : "LYRIC CONSTELLATION"}</div>
         <svg className="word-links" viewBox="0 0 100 100" preserveAspectRatio="none">
           {activeWords.slice(0, 18).map((word, i) => <line key={i} x1={8 + i * (84 / Math.max(1, activeWords.length))} y1={50 + Math.sin(i * 1.8) * 15} x2={8 + (i + 1) * (84 / Math.max(1, activeWords.length))} y2={50 + Math.sin((i + 1) * 1.8) * 15} />)}
         </svg>
         <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + word.index} className={"lyric-word " + (word.live ? "is-current-word" : "")} initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ duration: .24, type: "spring", stiffness: 220, damping: 19 }}>{word.text}<i /></motion.span>)}</div>
         <div className="lyric-next">{lyrics[activeLyric + 1]?.text || ""}</div>
-      </> : <div className="lyric-idle">{track ? (lyricsStatus === "loading" ? "SEARCHING FOR SYNCHRONIZED LYRICS" : lyricsStatus === "missing" ? "NO SYNCHRONIZED LYRICS FOUND FOR THIS TRACK" : "AURORA · SOUND BECOMES LIGHT") : "AURORA · SOUND BECOMES LIGHT"}</div>}
+      </> : <div className="lyric-idle">{track ? (lyricsStatus === "loading" ? "SEARCHING FOR SYNCHRONIZED LYRICS" : lyricsStatus === "missing" ? "NO SYNCHRONIZED LYRICS FOUND FOR THIS TRACK" : lyrics.length > 0 ? "NATIVE WORD SYNC NOT AVAILABLE FOR THIS TRACK" : "AURORA · SOUND BECOMES LIGHT") : "AURORA · SOUND BECOMES LIGHT"}</div>}
     </div>
 
     <motion.button className="library-trigger" layoutId="aurora-library" onClick={() => open ? setOpen(false) : openLibrary()} aria-label={open ? "Close song chooser" : "Open song chooser"} title="Song universe"><AudioLines size={19} /><span className="trigger-eq"><i /><i /><i /><i /></span></motion.button>
