@@ -98,8 +98,8 @@ async function fetchSyncedLyrics(item) {
         const titleExact = title === titleKey;
         const artistExact = who === artistKey;
         const artistRelated = who.includes(artistKey) || artistKey.includes(who);
-        return { row, score: (titleExact ? 4 : 0) + (artistExact ? 4 : artistRelated ? 2 : 0) + (row.syncedLyrics ? 2 : 0) + (row.plainLyrics ? 1 : 0) };
-      }).filter(x => x.score >= 6).sort((a,b) => b.score-a.score);
+        return { row, titleExact, artistExact, artistRelated, score: (titleExact ? 4 : 0) + (artistExact ? 4 : artistRelated ? 2 : 0) + (row.syncedLyrics ? 2 : 0) + (row.plainLyrics ? 1 : 0) };
+      }).filter(x => x.titleExact && (x.artistExact || x.artistRelated)).sort((a,b) => b.score-a.score);
       const match = ranked[0]?.row;
       if (match?.syncedLyrics) {
         const result = { rows: parseLrc(match.syncedLyrics), estimated: false };
@@ -292,10 +292,18 @@ export default function App() {
         }
         rms = Math.sqrt(rms / Math.max(1, wave.length));
         const energy = Math.min(1, bass * .72 + mids * .18 + rms * .65 + peak * .12);
-        const transient = Math.max(0, energy - lastLowRef.current) * 3.2;
-        lastLowRef.current = energy;
-        envelopeRef.current = Math.max(transient, envelopeRef.current * Math.exp(-elapsed * 5.2), energy * .42);
-        pulse = Math.min(1, envelopeRef.current);
+        if (energy < .006) {
+          // Some cross-origin previews play normally but expose silent analyser buffers.
+          const phase = (element.currentTime % .52) / .52;
+          const fallbackPulse = Math.pow(Math.max(0, Math.sin(phase * Math.PI * 2)), 5) * .72;
+          envelopeRef.current = Math.max(fallbackPulse, envelopeRef.current * Math.exp(-elapsed * 3));
+          pulse = envelopeRef.current;
+        } else {
+          const transient = Math.max(0, energy - lastLowRef.current) * 3.2;
+          lastLowRef.current = energy;
+          envelopeRef.current = Math.max(transient, envelopeRef.current * Math.exp(-elapsed * 5.2), energy * .42);
+          pulse = Math.min(1, envelopeRef.current);
+        }
       } else if (playing && element && !element.paused) {
         // Rhythmic visual fallback for browsers that expose playback but block analyser data.
         const beatPhase = (element.currentTime % .52) / .52;
