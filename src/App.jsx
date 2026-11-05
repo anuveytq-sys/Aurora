@@ -1,146 +1,47 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AudioLines, ChevronDown, Disc3, ExternalLink, Link2, Orbit, Play, X } from "lucide-react";
+import { AudioLines, ChevronDown, Disc3, Headphones, Orbit, Pause, Play, Search, SkipBack, SkipForward, Sparkles, Volume2, X } from "lucide-react";
 
-const STORAGE_KEY = "aurora.spotify.content.v1";
-const stars = Array.from({ length: 115 }, (_, index) => ({
-  id: index, left: (index * 37.17) % 100, top: (index * 61.73) % 100,
-  delay: (index % 19) * -0.37, duration: 2.4 + (index % 13) * 0.31,
-  size: index % 9 === 0 ? 3 : index % 4 === 0 ? 2 : 1
-}));
+const API="https://api.audius.co/v1", APP_NAME="AURORA", STORAGE="aurora.audius.last-track.v1";
+const palettes=[["#d79a58","#a85c35","#29170f"],["#8b9bd8","#3d4c88","#10162d"],["#65b8aa","#246c68","#0b2423"],["#c77b9e","#713d65","#24101e"],["#d3c078","#80713b","#25200e"],["#8aa5ba","#425f79","#111d2b"]];
+const stars=Array.from({length:125},(_,i)=>({id:i,x:(i*37.17)%100,y:(i*61.73)%100,s:i%11===0?3:i%4===0?2:1,d:(i%17)*-.4,t:2.5+(i%11)*.33}));
+const art=t=>t?.artwork?.["1000x1000"]||t?.artwork?.["480x480"]||t?.artwork?.["150x150"]||"";
+const time=s=>Math.floor((s||0)/60)+":"+String(Math.floor((s||0)%60)).padStart(2,"0");
+async function api(path){const r=await fetch(API+path);if(!r.ok)throw new Error(r.status===429?"Catalogue is busy. Try again shortly.":"Music catalogue unavailable.");const j=await r.json();return j.data||[]}
+async function findTracks(q){return api("/tracks/search?query="+encodeURIComponent(q)+"&limit=18&app_name="+APP_NAME)}
+async function trending(){return api("/tracks/trending?limit=18&app_name="+APP_NAME)}
+function stream(t){return API+"/tracks/"+encodeURIComponent(t.id)+"/stream?app_name="+APP_NAME}
 
-function parseSpotifyLink(value) {
-  const input = value.trim();
-  const uriMatch = input.match(/^spotify:(track|album|playlist|artist|show|episode):([a-zA-Z0-9]+)$/);
-  if (uriMatch) return { type: uriMatch[1], id: uriMatch[2] };
-  try {
-    const url = new URL(input);
-    if (!["open.spotify.com", "www.open.spotify.com"].includes(url.hostname)) return null;
-    const parts = url.pathname.split("/").filter(Boolean);
-    const offset = parts[0]?.startsWith("intl-") ? 1 : 0;
-    const type = parts[offset], id = parts[offset + 1];
-    if (!["track", "album", "playlist", "artist", "show", "episode"].includes(type)) return null;
-    return id && /^[a-zA-Z0-9]+$/.test(id) ? { type, id } : null;
-  } catch { return null; }
-}
-
-function embedUrl(content) {
-  return content ? `https://open.spotify.com/embed/${content.type}/${content.id}?utm_source=generator&theme=0` : "";
-}
-
-export default function App() {
-  const [dockOpen, setDockOpen] = useState(true);
-  const [linkInput, setLinkInput] = useState("");
-  const [content, setContent] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-      return saved && ["track", "album", "playlist", "artist", "show", "episode"].includes(saved.type) && /^[a-zA-Z0-9]+$/.test(saved.id) ? saved : null;
-    } catch { return null; }
-  });
-  const [error, setError] = useState("");
-  const [isPasting, setIsPasting] = useState(false);
-  const [playerExpanded, setPlayerExpanded] = useState(true);
-  const iframeSrc = useMemo(() => embedUrl(content), [content]);
-
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") setDockOpen(false);
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault(); setDockOpen((open) => !open);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    if (content) localStorage.setItem(STORAGE_KEY, JSON.stringify(content));
-    else localStorage.removeItem(STORAGE_KEY);
-  }, [content]);
-
-  const connectContent = (event) => {
-    event.preventDefault();
-    const parsed = parseSpotifyLink(linkInput);
-    if (!parsed) { setError("Paste a valid Spotify share link or URI."); return; }
-    setContent(parsed); setError(""); setPlayerExpanded(true); setLinkInput("");
-  };
-
-  const pasteLink = async () => {
-    if (!navigator.clipboard?.readText) { setError("Clipboard access is unavailable. Paste your link into the field."); return; }
-    try {
-      setIsPasting(true);
-      setLinkInput(await navigator.clipboard.readText());
-      setError("");
-    } catch { setError("Clipboard permission was not granted. Paste your link manually."); }
-    finally { setIsPasting(false); }
-  };
-
-  const clearContent = () => { setContent(null); setError(""); setPlayerExpanded(true); };
-
-  return (
-    <main className="universe">
-      <div className="noise" /><div className="ambient ambient-one" /><div className="ambient ambient-two" /><div className="horizon" />
-      <div className="star-field" aria-hidden="true">
-        {stars.map((star) => <span key={star.id} className="star" style={{left:`${star.left}%`,top:`${star.top}%`,width:star.size,height:star.size,animationDelay:`${star.delay}s`,animationDuration:`${star.duration}s`}} />)}
-      </div>
-
-      <header className="topbar">
-        <a className="brand" href="#home" aria-label="Aurora home"><span className="brand-mark"><Orbit size={16} /></span><span>AURORA<span className="brand-dot">.</span></span></a>
-        <div className="system-status"><span className="status-light" /> {content ? "SIGNAL CONNECTED" : "AWAITING SIGNAL"}</div>
-        <button className="top-icon" onClick={() => setDockOpen((open) => !open)} aria-label="Toggle music interface"><AudioLines size={17} /></button>
-      </header>
-
-      <section className="center-stage" id="home">
-        <div className="orbital orbital-a" /><div className="orbital orbital-b" />
-        <motion.button className={`core-emblem ${content ? "is-active" : ""}`} onClick={() => setDockOpen(true)} aria-label="Open Aurora music interface" whileHover={{scale:1.06}} whileTap={{scale:.96}}>
-          <motion.div className="core-inner" animate={{rotate:360}} transition={{duration:34,repeat:Infinity,ease:"linear"}}><Disc3 size={35} strokeWidth={1.05} /></motion.div>
-        </motion.button>
-        <motion.div className="center-hint" initial={{opacity:0}} animate={{opacity:.68}} transition={{delay:1}}>{content ? "SOUND IS IN MOTION" : "TOUCH THE ORBIT"}</motion.div>
-      </section>
-
-      <footer className="bottom-bar"><div><span className="tiny-pulse" /> {content ? "AUDIO PORTAL READY" : "A QUIETER KIND OF INFINITY"}</div><div className="shortcut"><kbd>CTRL</kbd> + <kbd>K</kbd><span className="footer-divider" /> <kbd>ESC</kbd></div></footer>
-
-      <AnimatePresence>
-        {!dockOpen && <motion.button className="mini-dock" onClick={() => setDockOpen(true)} initial={{opacity:0,scale:.45,x:-18,y:-12}} animate={{opacity:1,scale:1,x:0,y:0}} exit={{opacity:0,scale:.55,x:-14,y:-10}} transition={{type:"spring",stiffness:330,damping:25}} aria-label="Reopen music interface"><span className="mini-orbit"><AudioLines size={17}/></span><span className="mini-eq"><i/><i/><i/><i/></span></motion.button>}
-      </AnimatePresence>
-
-      {/* This is the only Spotify iframe. The dock is visually hidden, not unmounted, when collapsed. */}
-      <motion.div className="dock-overlay" initial={false} animate={{opacity:dockOpen?1:0}} transition={{duration:.24}} style={{pointerEvents:dockOpen?"auto":"none"}}>
-        <motion.section className={`music-dock ${content && playerExpanded ? "music-dock-player" : ""}`}
-          initial={false} animate={{opacity:dockOpen?1:0,scale:dockOpen?1:.82,y:dockOpen?0:24,filter:dockOpen?"blur(0px)":"blur(8px)"}}
-          transition={{type:"spring",stiffness:190,damping:23}} role="dialog" aria-modal="false" aria-label="Aurora music interface">
-          <div className="dock-edge" />
-          <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><AudioLines size={17}/></span><div><strong>AURORA</strong><small>PERSONAL SOUND PORTAL</small></div></div><button className="close-button" onClick={()=>setDockOpen(false)} aria-label="Collapse interface"><ChevronDown size={19}/></button></div>
-
-          {!content ? (
-            <div className="connect-view">
-              <motion.div className="portal-art" animate={{rotate:[0,1.5,0,-1.5,0]}} transition={{duration:16,repeat:Infinity,ease:"easeInOut"}}><div className="art-ring ring-one"/><div className="art-ring ring-two"/><div className="art-core"><Disc3 size={48} strokeWidth={.8}/></div></motion.div>
-              <div className="connect-controls"><span className="eyebrow">CONNECT A FREQUENCY</span>
-                <form className="spotify-form" onSubmit={connectContent}>
-                  <div className="link-input"><Link2 size={15}/><input aria-label="Spotify share link" value={linkInput} onChange={(event)=>{setLinkInput(event.target.value);setError("");}} placeholder="Paste a Spotify link or URI" autoComplete="off" spellCheck="false"/><button type="button" onClick={pasteLink} disabled={isPasting} aria-label="Paste from clipboard">{isPasting?"…":"PASTE"}</button></div>
-                  <button className="connect-button" type="submit" disabled={!linkInput.trim()}><Play size={13} fill="currentColor"/> CONNECT</button>
-                </form>
-                {error&&<p className="form-error" role="alert">{error}</p>}
-                <p className="support-note">TRACKS · ALBUMS · PLAYLISTS · ARTISTS · SHOWS</p>
-              </div>
-            </div>
-          ) : (
-            <div className="connected-view">
-              <div className="connected-topline"><span className="eyebrow"><span className="status-light"/> SPOTIFY SIGNAL ESTABLISHED</span><button className="text-icon-button" onClick={clearContent} aria-label="Disconnect current Spotify content"><X size={14}/></button></div>
-              <div className="embed-shell">
-                <div className="embed-label"><span>{content.type.toUpperCase()} STREAM</span><span>SPOTIFY OFFICIAL PLAYER</span></div>
-                <div className={`player-frame ${playerExpanded?"":"player-frame-collapsed"}`}>
-                  <iframe title="Spotify official embedded player" src={iframeSrc} width="100%" height={content.type==="track"||content.type==="episode"?"152":"352"} frameBorder="0" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="eager" allowFullScreen/>
-                </div>
-              </div>
-              <div className="connected-actions"><button className="text-icon-button" onClick={()=>setPlayerExpanded((expanded)=>!expanded)}>{playerExpanded?"COLLAPSE PLAYER":"SHOW PLAYER"}</button><a className="spotify-open" href={`https://open.spotify.com/${content.type}/${content.id}`} target="_blank" rel="noreferrer">OPEN IN SPOTIFY <ExternalLink size={12}/></a></div>
-              <form className="change-link-form" onSubmit={connectContent}><input aria-label="Replace Spotify link" value={linkInput} onChange={(event)=>{setLinkInput(event.target.value);setError("");}} placeholder="Replace with another Spotify link"/><button type="submit" disabled={!linkInput.trim()} aria-label="Load new Spotify link"><Play size={13}/></button></form>
-              {error&&<p className="form-error" role="alert">{error}</p>}
-            </div>
-          )}
-          <div className="dock-footer"><span><span className="footer-dot"/> LOCAL-FIRST / NO API KEY</span><span>AURORA / 002 <Orbit size={11}/></span></div>
-        </motion.section>
-      </motion.div>
-    </main>
-  );
+export default function App(){
+ const [open,setOpen]=useState(true),[query,setQuery]=useState(""),[results,setResults]=useState([]),[track,setTrack]=useState(()=>{try{return JSON.parse(localStorage.getItem(STORAGE)||"null")}catch{return null}}),[recent,setRecent]=useState(()=>{try{return JSON.parse(localStorage.getItem("aurora.recent")||"[]")}catch{return[]}}),[loading,setLoading]=useState(false),[error,setError]=useState(""),[playing,setPlaying]=useState(false),[current,setCurrent]=useState(0),[duration,setDuration]=useState(0),[volume,setVolume]=useState(.8),[paletteIndex,setPaletteIndex]=useState(0),[lyrics,setLyrics]=useState(false),[mode,setMode]=useState("orbit");
+ const audio=useRef(null),palette=palettes[paletteIndex],src=track?stream(track):"";
+ const search=useCallback(async(q)=>{setLoading(true);setError("");try{const data=q.trim()?await findTracks(q.trim()):await trending();setResults(Array.isArray(data)?data:[]);if(!data.length)setError("No tracks found in this catalogue.")}catch(e){setError(e.message||"Could not load music.")}finally{setLoading(false)}},[]);
+ useEffect(()=>{search("")},[search]);useEffect(()=>{track?localStorage.setItem(STORAGE,JSON.stringify(track)):localStorage.removeItem(STORAGE)},[track]);useEffect(()=>{localStorage.setItem("aurora.recent",JSON.stringify(recent.slice(0,8)))},[recent]);useEffect(()=>{if(audio.current)audio.current.volume=volume},[volume,track]);
+ useEffect(()=>{const key=e=>{if(e.key==="Escape")setOpen(false);if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();setOpen(v=>!v)}if(e.code==="Space"&&!["INPUT","TEXTAREA"].includes(document.activeElement?.tagName)){e.preventDefault();toggle()}};window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key)});
+ useEffect(()=>{if(track){const n=track.title.split("").reduce((a,c)=>a+c.charCodeAt(0),0);setPaletteIndex(n%palettes.length)}},[track]);
+ function choose(t){setTrack(t);setPlaying(false);setCurrent(0);setDuration(t.duration||0);setRecent(p=>[t,...p.filter(x=>x.id!==t.id)].slice(0,8));setOpen(false);setError("")}
+ async function toggle(){if(!audio.current)return;if(audio.current.paused){try{await audio.current.play()}catch{setError("This track could not be played. Try another result.")}}else audio.current.pause()}
+ function next(d){const list=results.length?results:recent,i=list.findIndex(x=>x.id===track?.id);if(list.length)choose(list[(i+d+list.length)%list.length])}
+ function submit(e){e.preventDefault();search(query)}
+ return <main className="universe" style={{"--accent":palette[0],"--glow":palette[1],"--deep":palette[2]}}>
+  <div className="noise"/><div className="ambient ambient-one"/><div className="ambient ambient-two"/><div className="horizon"/>
+  <div className="star-field">{stars.map(s=><span key={s.id} className="star" style={{left:s.x+"%",top:s.y+"%",width:s.s,height:s.s,animationDelay:s.d+"s",animationDuration:s.t+"s"}}/>)}</div>
+  <header className="topbar"><a className="brand" href="#home"><span className="brand-mark"><Orbit size={16}/></span><span>AURORA<span className="brand-dot">.</span></span></a><div className="system-status"><span className="status-light"/>{track?"AUDIO SIGNAL ACTIVE":"OPEN MUSIC UNIVERSE"}</div><button className="top-icon" onClick={()=>setOpen(v=>!v)} aria-label="Open library"><Search size={17}/></button></header>
+  <section className={"center-stage "+(playing?"is-playing":"")}><div className="orbital orbital-a"/><div className="orbital orbital-b"/><motion.div className={"core-emblem "+(playing?"is-active":"")} animate={{scale:playing?[1,1.035,1]:1}} transition={{duration:3,repeat:playing?Infinity:0}}><div className="core-inner"><Disc3 size={39}/></div></motion.div>{track&&<motion.div className="now-playing" key={track.id} initial={{opacity:0,y:8}} animate={{opacity:1,y:0}}><span>{track.title}</span><small>{track.user?.name||"Audius creator"}</small></motion.div>}<div className="center-hint">{playing?"AUDIO IN MOTION":track?"SIGNAL STANDBY":"TOUCH THE ORBIT"}</div><div className={"visualizer visualizer-"+mode+(playing?" active":"")}>{Array.from({length:mode==="wave"?42:24},(_,i)=><i key={i} style={{"--i":i}}/>)}</div></section>
+  <footer className="bottom-bar"><div><span className="tiny-pulse"/>{track?"AUDIO PORTAL READY":"DISCOVER OPEN MUSIC"}</div><div className="shortcut"><kbd>SPACE</kbd><span className="footer-divider"/><kbd>CTRL</kbd> + <kbd>K</kbd></div></footer>
+  {track&&<div className="transport"><img src={art(track)} alt=""/><div className="transport-info"><strong>{track.title}</strong><span>{track.user?.name||"Audius creator"}</span><div className="seek-row"><span>{time(current)}</span><input aria-label="Seek" type="range" min="0" max={duration||1} value={Math.min(current,duration||1)} onChange={e=>{if(audio.current)audio.current.currentTime=Number(e.target.value)}}/><span>{time(duration)}</span></div></div><div className="transport-actions"><button onClick={()=>next(-1)} aria-label="Previous"><SkipBack size={16}/></button><button className="play-main" onClick={toggle} aria-label={playing?"Pause":"Play"}>{playing?<Pause size={17}/>:<Play size={17}/>}</button><button onClick={()=>next(1)} aria-label="Next"><SkipForward size={16}/></button></div><div className="volume-control"><Volume2 size={14}/><input aria-label="Volume" type="range" min="0" max="1" step=".01" value={volume} onChange={e=>setVolume(Number(e.target.value))}/></div></div>}
+  <audio ref={audio} src={src} onTimeUpdate={()=>{if(audio.current){setCurrent(audio.current.currentTime);setDuration(audio.current.duration||track?.duration||0)}}} onLoadedMetadata={()=>setDuration(audio.current?.duration||track?.duration||0)} onPlay={()=>setPlaying(true)} onPause={()=>setPlaying(false)} onEnded={()=>next(1)} crossOrigin="anonymous"/>
+  <AnimatePresence>{!open&&<motion.button className="mini-dock" onClick={()=>setOpen(true)} initial={{opacity:0,scale:.45,x:-18}} animate={{opacity:1,scale:1,x:0}} exit={{opacity:0,scale:.55}}><span className="mini-orbit"><AudioLines size={17}/></span><span className="mini-eq"><i/><i/><i/><i/></span></motion.button>}</AnimatePresence>
+  <AnimatePresence>{open&&<motion.div className="dock-overlay" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><motion.section className="music-dock library-dock" initial={{opacity:0,scale:.84,y:30,filter:"blur(10px)"}} animate={{opacity:1,scale:1,y:0,filter:"blur(0px)"}} exit={{opacity:0,scale:.84,y:20}} transition={{type:"spring",stiffness:190,damping:23}}>
+   <div className="dock-edge"/><div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={17}/></span><div><strong>DISCOVER</strong><small>OPEN MUSIC CATALOGUE</small></div></div><button className="close-button" onClick={()=>setOpen(false)} aria-label="Close"><ChevronDown size={19}/></button></div>
+   <form className="search-form" onSubmit={submit}><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search songs, artists, moods…" aria-label="Search music"/><button type="submit" disabled={loading}>{loading?"…":"SEARCH"}</button></form>
+   <div className="library-toolbar"><span>{query.trim()?"SEARCH RESULTS":"TRENDING DISCOVERY"}</span><span>POWERED BY AUDIUS</span></div>{error&&<p className="form-error">{error}</p>}
+   <div className="track-results">{results.map(item=><button className={"track-result "+(track?.id===item.id?"selected":"")} key={item.id} onClick={()=>choose(item)}><span className="result-art">{art(item)?<img src={art(item)} alt=""/>:<Disc3 size={22}/>}<span className="result-play"><Play size={12}/></span></span><span className="result-copy"><strong>{item.title}</strong><small>{item.user?.name||"Unknown creator"}{item.genre?" · "+item.genre:""}</small></span><span className="result-duration">{time(item.duration)}</span></button>)}</div>
+   {recent.length>0&&<div className="recent-strip"><span>RECENT</span>{recent.slice(0,4).map(item=><button key={item.id} onClick={()=>choose(item)}>{item.title}</button>)}</div>}
+   <div className="dock-footer"><span><span className="footer-dot"/> FREE DISCOVERY / NO API KEY FOR BASIC READS</span><span>AURORA / 003 <Orbit size={11}/></span></div>
+  </motion.section></motion.div>}</AnimatePresence>
+  <button className="lyrics-toggle" onClick={()=>setLyrics(v=>!v)} title="Lyric constellation"><Sparkles size={15}/></button>
+  <div className="visual-mode-toggle"><button onClick={()=>setMode("orbit")}>ORBIT</button><button onClick={()=>setMode("wave")}>WAVE</button></div>
+  <AnimatePresence>{lyrics&&<motion.div className="lyrics-overlay" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}}><div className="lyrics-card"><button className="close-button" onClick={()=>setLyrics(false)}><X size={17}/></button><Sparkles size={25}/><strong>LYRIC CONSTELLATION</strong><p>Music-reactive visual mode is ready. Full lyric text requires a properly licensed lyrics provider; AURORA won't scrape or reproduce copyrighted lyrics.</p></div></motion.div>}</AnimatePresence>
+ </main>
 }
