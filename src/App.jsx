@@ -53,25 +53,67 @@ async function appleSearch(term) {
   }));
   return rows.filter(t => t.trackName && t.artistName && t.previewUrl).map(normalizeApple);
 }
+const lyricCache = new Map();
+const cleanMatch = value => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+async function lyricRequest(url, timeoutMs = 4500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+    if (!response.ok) return null;
+    return await response.json();
+  } finally { clearTimeout(timer); }
+}
+function approximateLrc(plainLyrics, duration) {
+  const lines = String(plainLyrics || "").split(/\r?\n/).map(line => line.trim()).filter(line => line && !/^\[.*\]$/.test(line));
+  if (!lines.length) return [];
+  const total = Math.max(45, Number(duration) || 210);
+  return lines.map((text, index) => ({ at: (index / Math.max(1, lines.length)) * total, text, estimated: true }));
+}
 async function fetchSyncedLyrics(item) {
+  const key = cleanMatch(item.title) + "|" + cleanMatch(artist(item));
+  if (lyricCache.has(key)) return lyricCache.get(key);
   const params = new URLSearchParams({
     track_name: item.title || "",
     artist_name: artist(item),
     ...(item.albumName ? { album_name: item.albumName } : {}),
     ...(item.duration ? { duration: String(Math.round(item.duration)) } : {})
   });
-  let response = await fetch(LYRICS_API + "/get?" + params.toString());
-  if (response.ok) {
-    const record = await response.json();
-    if (record.syncedLyrics) return parseLrc(record.syncedLyrics);
-  }
-  const searchParams = new URLSearchParams({ track_name: item.title || "", artist_name: artist(item) });
-  response = await fetch(LYRICS_API + "/search?" + searchParams.toString());
-  if (!response.ok) return [];
-  const matches = await response.json();
-  const clean = value => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  const match = matches.find(row => clean(row.trackName) === clean(item.title) && clean(row.artistName) === clean(artist(item)) && row.syncedLyrics);
-  return match ? parseLrc(match.syncedLyrics) : [];
+  try {
+    const record = await lyricRequest(LYRICS_API + "/get?" + params.toString());
+    if (record?.syncedLyrics) {
+      const result = { rows: parseLrc(record.syncedLyrics), estimated: false };
+      if (result.rows.length) { lyricCache.set(key, result); return result; }
+    }
+  } catch {}
+  try {
+    const searchParams = new URLSearchParams({ track_name: item.title || "", artist_name: artist(item) });
+    const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString());
+    if (Array.isArray(matches)) {
+      const titleKey = cleanMatch(item.title);
+      const artistKey = cleanMatch(artist(item));
+      const ranked = matches.map(row => {
+        const title = cleanMatch(row.trackName);
+        const who = cleanMatch(row.artistName);
+        const titleExact = title === titleKey;
+        const artistExact = who === artistKey;
+        const artistRelated = who.includes(artistKey) || artistKey.includes(who);
+        return { row, score: (titleExact ? 4 : 0) + (artistExact ? 4 : artistRelated ? 2 : 0) + (row.syncedLyrics ? 2 : 0) + (row.plainLyrics ? 1 : 0) };
+      }).filter(x => x.score >= 6).sort((a,b) => b.score-a.score);
+      const match = ranked[0]?.row;
+      if (match?.syncedLyrics) {
+        const result = { rows: parseLrc(match.syncedLyrics), estimated: false };
+        if (result.rows.length) { lyricCache.set(key, result); return result; }
+      }
+      if (match?.plainLyrics) {
+        const result = { rows: approximateLrc(match.plainLyrics, item.duration), estimated: true };
+        if (result.rows.length) { lyricCache.set(key, result); return result; }
+      }
+    }
+  } catch {}
+  const empty = { rows: [], estimated: false };
+  lyricCache.set(key, empty);
+  return empty;
 }
 function cataloguePath(query, genre, offset) {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), app_name: APP_NAME, sort_method: "popular" });
@@ -119,6 +161,11 @@ export default function App() {
   const sourceRef = useRef(null);
   const envelopeRef = useRef(0);
   const lastLowRef = useRef(0);
+  const frequencyDataRef = useRef(null);
+  const waveformDataRef = useRef(null);
+  const lyricRequestRef = useRef(0);
+  const lastUiTimeRef = useRef(-1);
+  const lastFrameRef = useRef(0);
   const load = useCallback(async ({ reset = true, q = query, g = genre } = {}) => {
     setLoading(true); setError("");
     const start = reset ? 0 : offset;
@@ -167,30 +214,46 @@ export default function App() {
     if (AudioContextClass && !sourceRef.current) {
       const context = new AudioContextClass();
       const analyser = context.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = .68;
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = .42;
+      analyser.minDecibels = -88;
+      analyser.maxDecibels = -18;
       const source = context.createMediaElementSource(element);
       source.connect(analyser);
       analyser.connect(context.destination);
       contextRef.current = context;
       analyserRef.current = analyser;
       sourceRef.current = source;
+      frequencyDataRef.current = new Uint8Array(analyser.frequencyBinCount);
+      waveformDataRef.current = new Uint8Array(analyser.fftSize);
     }
     if (contextRef.current?.state === "suspended") await contextRef.current.resume();
   }
 
   async function playSelected(item) {
+    const requestId = ++lyricRequestRef.current;
     setTrack(item);
     setRecent(old => [item, ...old.filter(x => x.id !== item.id)].slice(0, 8));
-    setLyrics([]); setLyricsStatus("loading"); setLyricFileName(""); setCurrentTime(0); setError(""); setOpen(false);
-    fetchSyncedLyrics(item).then(rows => {
-      setLyrics(rows);
-      setLyricsStatus(rows.length ? "ready" : "missing");
-    }).catch(() => setLyricsStatus("missing"));
+    setLyrics([]); setLyricsStatus("loading"); setLyricFileName(""); setCurrentTime(0); lastUiTimeRef.current = -1;
+    setError(""); setOpen(false); envelopeRef.current = 0; lastLowRef.current = 0;
+    fetchSyncedLyrics(item).then(result => {
+      if (requestId !== lyricRequestRef.current) return;
+      setLyrics(result.rows);
+      setLyricsStatus(result.rows.length ? (result.estimated ? "estimated" : "ready") : "missing");
+    }).catch(() => {
+      if (requestId === lyricRequestRef.current) setLyricsStatus("missing");
+    });
     const element = audio.current;
     if (!element) return;
     try {
-      element.src = stream(item); element.load();
+      await ensureAudioGraph(element);
+    } catch {
+      // Keep playback available even on browsers that deny audio analysis.
+    }
+    try {
+      element.pause();
+      element.src = stream(item);
+      element.load();
       await element.play();
     } catch { setError(item.previewUrl ? "This preview could not start." : "This stream could not start. Try another result."); }
   }
@@ -206,35 +269,75 @@ export default function App() {
   }
   useEffect(() => {
     let frame;
-    const tick = () => {
+    const tick = timestamp => {
+      const elapsed = lastFrameRef.current ? Math.min(.08, (timestamp - lastFrameRef.current) / 1000) : .016;
+      lastFrameRef.current = timestamp;
       const analyser = analyserRef.current;
+      const element = audio.current;
       let pulse = 0;
-      if (analyser && playing) {
-        const bins = new Uint8Array(analyser.frequencyBinCount);
+      if (analyser && playing && element && !element.paused) {
+        const bins = frequencyDataRef.current || new Uint8Array(analyser.frequencyBinCount);
+        const wave = waveformDataRef.current || new Uint8Array(analyser.fftSize);
         analyser.getByteFrequencyData(bins);
-        let low = 0;
-        for (let i = 0; i < 10; i++) low += bins[i];
-        low /= 10 * 255;
-        const transient = Math.max(0, low - lastLowRef.current) * 3.8;
-        lastLowRef.current = low;
-        envelopeRef.current = Math.max(transient, envelopeRef.current * .86, low * .22);
+        analyser.getByteTimeDomainData(wave);
+        let bass = 0, mids = 0, peak = 0, rms = 0;
+        for (let i = 2; i < Math.min(28, bins.length); i++) bass += bins[i] / 255;
+        bass /= Math.max(1, Math.min(28, bins.length) - 2);
+        for (let i = 28; i < Math.min(110, bins.length); i++) mids += bins[i] / 255;
+        mids /= Math.max(1, Math.min(110, bins.length) - 28);
+        for (let i = 0; i < wave.length; i++) {
+          const sample = Math.abs((wave[i] - 128) / 128);
+          peak = Math.max(peak, sample);
+          rms += sample * sample;
+        }
+        rms = Math.sqrt(rms / Math.max(1, wave.length));
+        const energy = Math.min(1, bass * .72 + mids * .18 + rms * .65 + peak * .12);
+        const transient = Math.max(0, energy - lastLowRef.current) * 3.2;
+        lastLowRef.current = energy;
+        envelopeRef.current = Math.max(transient, envelopeRef.current * Math.exp(-elapsed * 5.2), energy * .42);
         pulse = Math.min(1, envelopeRef.current);
-      } else { envelopeRef.current *= .9; lastLowRef.current = 0; }
+      } else if (playing && element && !element.paused) {
+        // Rhythmic visual fallback for browsers that expose playback but block analyser data.
+        const beatPhase = (element.currentTime % .52) / .52;
+        const rhythmic = Math.pow(Math.max(0, Math.sin(beatPhase * Math.PI * 2)), 5);
+        envelopeRef.current = Math.max(rhythmic * .72, envelopeRef.current * Math.exp(-elapsed * 3));
+        pulse = envelopeRef.current;
+      } else {
+        envelopeRef.current *= Math.exp(-elapsed * 7);
+        lastLowRef.current = 0;
+      }
       mainRef.current?.style.setProperty("--beat", String(pulse));
-      mainRef.current?.style.setProperty("--beat-glow", String(.12 + pulse * .88));
-      if (audio.current && Math.floor(audio.current.currentTime * 8) !== Math.floor(currentTime * 8)) setCurrentTime(audio.current.currentTime);
+      mainRef.current?.style.setProperty("--beat-glow", String(.16 + pulse * .84));
+      if (element && !element.paused) {
+        const now = element.currentTime;
+        if (lastUiTimeRef.current < 0 || Math.abs(now - lastUiTimeRef.current) >= .075) {
+          lastUiTimeRef.current = now;
+          setCurrentTime(now);
+        }
+      }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [playing, currentTime]);
+    return () => { cancelAnimationFrame(frame); lastFrameRef.current = 0; };
+  }, [playing]);
 
   const activeLyric = useMemo(() => {
     let found = -1;
     for (let i = 0; i < lyrics.length; i++) if (lyrics[i].at <= currentTime) found = i; else break;
     return found;
   }, [lyrics, currentTime]);
-  const activeWords = useMemo(() => activeLyric >= 0 ? lyrics[activeLyric].text.split(/\s+/).filter(Boolean) : [], [lyrics, activeLyric]);
+  const activeWords = useMemo(() => {
+    if (activeLyric < 0) return [];
+    const line = lyrics[activeLyric];
+    const words = line.text.split(/\s+/).filter(Boolean).slice(0, 18);
+    if (words.length <= 1) return words;
+    const nextAt = lyrics[activeLyric + 1]?.at;
+    const fallbackEnd = Math.min(Number(audio.current?.duration) || line.at + 4, line.at + Math.max(2.4, words.length * .42));
+    const end = nextAt && nextAt > line.at ? nextAt : fallbackEnd;
+    const progress = Math.max(0, Math.min(.999, (currentTime - line.at) / Math.max(.6, end - line.at)));
+    const count = Math.max(1, Math.min(words.length, Math.floor(progress * words.length) + 1));
+    return words.slice(0, count);
+  }, [lyrics, activeLyric, currentTime]);
 
   function onLyricFile(event) {
     const file = event.target.files?.[0];
@@ -260,11 +363,11 @@ export default function App() {
 
     <div className="lyric-constellation" aria-live="polite">
       {lyrics.length > 0 && activeLyric >= 0 ? <>
-        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : "LYRIC CONSTELLATION"}</div>
+        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyricsStatus === "estimated" ? "ESTIMATED LYRIC CONSTELLATION" : "LYRIC CONSTELLATION"}</div>
         <svg className="word-links" viewBox="0 0 100 100" preserveAspectRatio="none">
           {activeWords.slice(0, 18).map((word, i) => <line key={i} x1={8 + i * (84 / Math.max(1, activeWords.length))} y1={50 + Math.sin(i * 1.8) * 15} x2={8 + (i + 1) * (84 / Math.max(1, activeWords.length))} y2={50 + Math.sin((i + 1) * 1.8) * 15} />)}
         </svg>
-        <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + i} className="lyric-word" initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ delay: i * .055, type: "spring", stiffness: 180, damping: 16 }}>{word}<i /></motion.span>)}</div>
+        <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + i} className="lyric-word" initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ delay: 0, duration: .24, type: "spring", stiffness: 220, damping: 19 }}>{word}<i /></motion.span>)}</div>
         <div className="lyric-next">{lyrics[activeLyric + 1]?.text || ""}</div>
       </> : <div className="lyric-idle">{track ? (lyricsStatus === "loading" ? "SEARCHING FOR SYNCHRONIZED LYRICS" : lyricsStatus === "missing" ? "NO SYNCHRONIZED LYRICS FOUND FOR THIS TRACK" : "AURORA · SOUND BECOMES LIGHT") : "AURORA · SOUND BECOMES LIGHT"}</div>}
     </div>
