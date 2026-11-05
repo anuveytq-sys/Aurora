@@ -55,73 +55,115 @@ async function appleSearch(term) {
 }
 const lyricCache = new Map();
 const cleanMatch = value => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+const artistMatchScore = (a, b) => {
+  const primary = value => cleanMatch(String(value || "").split(/\b(?:feat(?:uring)?|ft\.?|with)\b|[,;|]/i)[0]);
+  const left = primary(a), right = primary(b);
+  if (!left || !right) return 0;
+  if (left === right || left.startsWith(right) || right.startsWith(left)) return 1;
+  const tokensA = new Set(left.match(/[a-z0-9]{2,}/g) || []);
+  const tokensB = new Set(right.match(/[a-z0-9]{2,}/g) || []);
+  const overlap = [...tokensA].filter(token => tokensB.has(token)).length;
+  return overlap / Math.max(1, Math.min(tokensA.size, tokensB.size));
+};
 async function lyricRequest(url, timeoutMs = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
-      headers: { Accept: "application/json", "Lrclib-Client": "AURORA/1.0 (https://github.com/anuveytq-sys/Aurora)" }
+      headers: { Accept: "application/json", "Lrclib-Client": "AURORA/1.1 (https://github.com/anuveytq-sys/Aurora)" }
     });
     if (!response.ok) return null;
     return await response.json();
   } finally { clearTimeout(timer); }
 }
+function yamlScalar(value) {
+  const raw = String(value || "").trim();
+  if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1).replace(/''/g, "'");
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    try { return JSON.parse(raw); } catch {}
+  }
+  return raw;
+}
+function parseLyricsFile(source) {
+  const sourceLines = String(source || "").split(/\r?\n/);
+  const rows = [];
+  let line = null, word = null, inWords = false;
+  for (const raw of sourceLines) {
+    let match;
+    if ((match = raw.match(/^  - text:\s*(.*)$/))) {
+      if (line && Number.isFinite(line.at)) rows.push(line);
+      line = { text: yamlScalar(match[1]), at: null, end: null, words: [] };
+      word = null; inWords = false; continue;
+    }
+    if (!line) continue;
+    if (/^    words:\s*$/.test(raw)) { inWords = true; word = null; continue; }
+    if (inWords && (match = raw.match(/^      - text:\s*(.*)$/))) {
+      word = { text: yamlScalar(match[1]), at: null, end: null };
+      line.words.push(word); continue;
+    }
+    if (inWords && (match = raw.match(/^        start_ms:\s*(-?\d+)/))) { if (word) word.at = Number(match[1]) / 1000; continue; }
+    if (inWords && (match = raw.match(/^        end_ms:\s*(-?\d+)/))) { if (word) word.end = Number(match[1]) / 1000; continue; }
+    if ((match = raw.match(/^    start_ms:\s*(-?\d+)/))) { line.at = Number(match[1]) / 1000; inWords = false; continue; }
+    if ((match = raw.match(/^    end_ms:\s*(-?\d+)/))) { line.end = Number(match[1]) / 1000; inWords = false; continue; }
+    if (/^    [a-z_]+:/.test(raw) && !/^    words:/.test(raw)) inWords = false;
+  }
+  if (line && Number.isFinite(line.at)) rows.push(line);
+  return rows.filter(row => row.text && Number.isFinite(row.at))
+    .map(row => ({ ...row, words: row.words.filter(w => w.text && Number.isFinite(w.at)).sort((x,y) => x.at-y.at) }))
+    .sort((x,y) => x.at-y.at);
+}
 async function fetchSyncedLyrics(item) {
   const key = cleanMatch(item.title) + "|" + cleanMatch(artist(item));
   if (lyricCache.has(key)) return lyricCache.get(key);
   const titleKey = cleanMatch(item.title);
-  const artistKey = cleanMatch(artist(item));
-  const exactArtist = value => {
-    const candidate = cleanMatch(value);
-    return !!candidate && !!artistKey && (
-      candidate === artistKey || candidate.startsWith(artistKey) || artistKey.startsWith(candidate)
-    );
-  };
+  const artistScore = value => artistMatchScore(value, artist(item));
   const usable = record => {
-    if (!record?.syncedLyrics || cleanMatch(record.trackName) !== titleKey || !exactArtist(record.artistName)) return null;
-    const rows = parseLrc(record.syncedLyrics);
+    if (!record || cleanMatch(record.trackName || record.name) !== titleKey || artistScore(record.artistName) < .55) return null;
+    const wordRows = record.hasWordSync ? parseLyricsFile(record.lyricsfile) : [];
+    const rows = wordRows.length ? wordRows : parseLrc(record.syncedLyrics);
     if (!rows.length) return null;
-    const result = { rows, estimated: false };
+    const result = { rows, wordSynced: wordRows.some(row => row.words.length), estimated: false };
     lyricCache.set(key, result);
     return result;
   };
-
-  // Exact signature lookup, followed by indexed search if no verified match.
   const params = new URLSearchParams({
     track_name: item.title || "",
     artist_name: artist(item),
     ...(item.albumName ? { album_name: item.albumName } : {}),
-    ...(item.duration > 0 ? { duration: String(Math.round(item.duration)) } : {})
+    ...(item.duration > 0 && item.duration < 3600 ? { duration: String(Math.round(item.duration)) } : {})
   });
   try {
     const record = await lyricRequest(LYRICS_API + "/get?" + params.toString(), 10000);
     const result = usable(record);
     if (result) return result;
   } catch {}
-
-  try {
-    const searchParams = new URLSearchParams({ track_name: item.title || "", artist_name: artist(item) });
-    const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString(), 8000);
-    if (Array.isArray(matches)) {
+  const queries = [
+    new URLSearchParams({ track_name: item.title || "", artist_name: artist(item) }),
+    new URLSearchParams({ track_name: item.title || "" }),
+    new URLSearchParams({ q: (item.title || "") + " " + artist(item) })
+  ];
+  for (const searchParams of queries) {
+    try {
+      const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString(), 8000);
+      if (!Array.isArray(matches)) continue;
       const candidates = matches
-        .filter(row => cleanMatch(row.trackName) === titleKey && exactArtist(row.artistName) && row.syncedLyrics)
-        .sort((a, b) => {
-          const albumA = cleanMatch(a.albumName) === cleanMatch(item.albumName) ? 1 : 0;
-          const albumB = cleanMatch(b.albumName) === cleanMatch(item.albumName) ? 1 : 0;
-          const durationA = item.duration ? Math.abs(Number(a.duration || 0) - item.duration) : 0;
-          const durationB = item.duration ? Math.abs(Number(b.duration || 0) - item.duration) : 0;
-          return albumB - albumA || durationA - durationB;
+        .filter(row => cleanMatch(row.trackName || row.name) === titleKey && artistScore(row.artistName) >= .55)
+        .sort((x, y) => {
+          const wordA = x.hasWordSync ? 1 : 0, wordB = y.hasWordSync ? 1 : 0;
+          const albumA = cleanMatch(x.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+          const albumB = cleanMatch(y.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+          const durationA = item.duration ? Math.abs(Number(x.duration || 0) - item.duration) : 0;
+          const durationB = item.duration ? Math.abs(Number(y.duration || 0) - item.duration) : 0;
+          return wordB - wordA || albumB - albumA || durationA - durationB;
         });
       for (const candidate of candidates) {
         const result = usable(candidate);
         if (result) return result;
       }
-    }
-  } catch {}
-
-  // Never manufacture timestamps from plain lyrics: that causes false sync.
-  return { rows: [], estimated: false };
+    } catch {}
+  }
+  return { rows: [], wordSynced: false, estimated: false };
 }
 function cataloguePath(query, genre, offset) {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), app_name: APP_NAME, sort_method: "popular" });
@@ -136,17 +178,19 @@ function parseLrc(source) {
   const offsetMatch = offsetLine?.match(/^\[offset:\s*(-?\d+)\s*\]/i);
   const offsetSeconds = offsetMatch ? Number(offsetMatch[1]) / 1000 : 0;
   for (const raw of lines) {
-    const matches = [...raw.matchAll(/\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g)];
+    const matches = [...raw.matchAll(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g)];
     const text = raw.replace(/\[[^\]]+\]/g, "").trim();
-    if (!text || !matches.length) continue;
+    if (!matches.length || !text) continue;
     for (const match of matches) {
       const digits = match[3] || "0";
       const fraction = Number(digits) / Math.pow(10, digits.length);
       const at = Math.max(0, Number(match[1]) * 60 + Number(match[2]) + fraction + offsetSeconds);
-      rows.push({ at, text });
+      const existing = rows.find(row => Math.abs(row.at - at) < .005);
+      if (existing && !existing.text.includes(text)) existing.text += " · " + text;
+      else if (!existing) rows.push({ at, text, end: null, words: [] });
     }
   }
-  return rows.sort((a, b) => a.at - b.at).filter((row, index, all) => index === 0 || row.at > all[index - 1].at);
+  return rows.sort((x,y) => x.at-y.at);
 }
 
 export default function App() {
@@ -350,10 +394,22 @@ export default function App() {
   }, [lyrics, currentTime]);
   const activeWords = useMemo(() => {
     if (activeLyric < 0) return [];
-    // Standard LRC syncs complete lines, not individual words. Show the full
-    // line at its actual timestamp rather than inventing word timings.
-    return lyrics[activeLyric].text.split(/\s+/).filter(Boolean).slice(0, 18);
-  }, [lyrics, activeLyric]);
+    const row = lyrics[activeLyric];
+    const words = row.text.split(/\s+/).filter(Boolean).slice(0, 18);
+    if (row.words?.length) {
+      return row.words.slice(0, 18)
+        .filter(word => word.at <= currentTime + .015)
+        .map((word, index) => ({ text: word.text.trim(), index, live: currentTime <= (word.end ?? word.at + .45) }));
+    }
+    // LRC timestamps are line-level. Animate each word within that line's
+    // timestamp window; this is an interpolation, not source-provided word sync.
+    const nextAt = lyrics[activeLyric + 1]?.at;
+    const gap = Number.isFinite(nextAt) ? Math.max(.35, nextAt - row.at) : 3.2;
+    const displayWindow = Math.min(gap, Math.max(1.25, words.length * .28));
+    const elapsed = Math.max(0, currentTime - row.at);
+    const count = Math.min(words.length, Math.max(1, Math.floor(elapsed / (displayWindow / Math.max(1, words.length))) + 1));
+    return words.slice(0, count).map((text, index) => ({ text, index, live: index === count - 1 }));
+  }, [lyrics, activeLyric, currentTime]);
 
   function onLyricFile(event) {
     const file = event.target.files?.[0];
@@ -379,11 +435,11 @@ export default function App() {
 
     <div className="lyric-constellation" aria-live="polite">
       {lyrics.length > 0 && activeLyric >= 0 ? <>
-        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyricsStatus === "estimated" ? "ESTIMATED LYRIC CONSTELLATION" : "LYRIC CONSTELLATION"}</div>
+        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyrics.some(row => row.words?.length) ? "WORD-SYNCED LYRIC CONSTELLATION" : "LYRIC CONSTELLATION"}</div>
         <svg className="word-links" viewBox="0 0 100 100" preserveAspectRatio="none">
           {activeWords.slice(0, 18).map((word, i) => <line key={i} x1={8 + i * (84 / Math.max(1, activeWords.length))} y1={50 + Math.sin(i * 1.8) * 15} x2={8 + (i + 1) * (84 / Math.max(1, activeWords.length))} y2={50 + Math.sin((i + 1) * 1.8) * 15} />)}
         </svg>
-        <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + i} className="lyric-word" initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ delay: 0, duration: .24, type: "spring", stiffness: 220, damping: 19 }}>{word}<i /></motion.span>)}</div>
+        <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + word.index} className={"lyric-word " + (word.live ? "is-current-word" : "")} initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ duration: .24, type: "spring", stiffness: 220, damping: 19 }}>{word.text}<i /></motion.span>)}</div>
         <div className="lyric-next">{lyrics[activeLyric + 1]?.text || ""}</div>
       </> : <div className="lyric-idle">{track ? (lyricsStatus === "loading" ? "SEARCHING FOR SYNCHRONIZED LYRICS" : lyricsStatus === "missing" ? "NO SYNCHRONIZED LYRICS FOUND FOR THIS TRACK" : "AURORA · SOUND BECOMES LIGHT") : "AURORA · SOUND BECOMES LIGHT"}</div>}
     </div>
