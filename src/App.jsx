@@ -160,7 +160,7 @@ async function fetchLiriQoWordLyrics(item) {
     ...(item.duration > 0 && item.duration < 3600 ? { duration: String(Math.round(item.duration)) } : {})
   });
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25000);
+  const timer = setTimeout(() => controller.abort(), 7500);
   try {
     const response = await fetch("https://api.liriqo-alfarrizi.my.id/v1/lyrics?" + params.toString(), {
       signal: controller.signal,
@@ -197,10 +197,11 @@ async function fetchLyricaWordLyrics(item) {
     artist: artist(item),
     song: item.title || "",
     timestamps: "true",
-    word: "true"
+    word: "true",
+    fast: "true"
   });
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 16000);
+  const timer = setTimeout(() => controller.abort(), 7500);
   try {
     const response = await fetch("https://wilooper-lyrica.hf.space/lyrics/?" + params.toString(), {
       signal: controller.signal,
@@ -244,21 +245,25 @@ async function fetchSyncedLyrics(item) {
   ].join("|");
   if (lyricCache.has(key)) return lyricCache.get(key);
 
-  // First ask a multi-provider aggregator for native word/syllable timestamps.
-  // This is the only path that can produce genuine word-by-word synchronization.
-  const rich = await fetchLiriQoWordLyrics(item);
+  // Query independent native word-timing aggregators at the same time.
+  // Promise.any returns the first verified word-synced result instead of
+  // waiting for a slow provider before trying the next one.
+  const wordSources = [
+    fetchLiriQoWordLyrics(item),
+    fetchLyricaWordLyrics(item)
+  ];
+  const rich = await Promise.any(wordSources.map(source => source.then(result => {
+    if (result?.wordSynced && result.rows?.some(row => row.words?.length)) return result;
+    throw new Error("No native word timing from this source");
+  }))).catch(() => null);
+
   if (rich) {
     lyricCache.set(key, rich);
     return rich;
   }
-  const alternateRich = await fetchLyricaWordLyrics(item);
-  if (alternateRich) {
-    lyricCache.set(key, alternateRich);
-    return alternateRich;
-  }
 
-  // LRCLIB remains the fallback for verified line-timed lyrics. It does not
-  // provide native word timing for legacy LRC records.
+  // Verified LRCLIB records are the fallback when native word timing is
+  // unavailable. They may provide line-level timing, not word-level timing.
   const titleKey = cleanMatch(item.title);
   const artistScore = value => artistMatchScore(value, artist(item));
   const usable = record => {
@@ -278,7 +283,7 @@ async function fetchSyncedLyrics(item) {
     ...(item.duration > 0 && item.duration < 3600 ? { duration: String(Math.round(item.duration)) } : {})
   });
   try {
-    const record = await lyricRequest(LYRICS_API + "/get?" + params.toString(), 10000);
+    const record = await lyricRequest(LYRICS_API + "/get?" + params.toString(), 6500);
     const result = usable(record);
     if (result) return result;
   } catch {}
@@ -290,7 +295,7 @@ async function fetchSyncedLyrics(item) {
   ];
   for (const searchParams of queries) {
     try {
-      const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString(), 8000);
+      const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString(), 5500);
       if (!Array.isArray(matches)) continue;
       const candidates = matches
         .filter(row => cleanMatch(row.trackName || row.name) === titleKey && artistScore(row.artistName) >= .55)
