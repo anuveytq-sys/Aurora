@@ -5,13 +5,15 @@ import { AudioLines, Disc3, Headphones, Music2, Play, Search, X, FileUp, Externa
 const API = "https://api.audius.co/v1";
 const APP_NAME = "AURORA";
 const PAGE_SIZE = 30;
+const ITUNES = "https://itunes.apple.com";
+const LYRICS_API = "https://lrclib.net/api";
 const STORAGE = "aurora.audius.last-track.v1";
 const genres = ["All", "Electronic", "Hip-Hop/Rap", "Pop", "Rock", "Ambient", "Classical", "Jazz", "House", "Techno"];
 const stars = Array.from({ length: 34 }, (_, i) => ({ id: i, x: 5 + (i * 37.17) % 90, y: 8 + (i * 61.73) % 82 }));
 const links = Array.from({ length: 46 }, (_, i) => [i % stars.length, (i * 7 + 5) % stars.length]).filter(([a, b]) => a !== b);
-const art = t => t?.artwork?.["1000x1000"] || t?.artwork?.["480x480"] || t?.artwork?.["150x150"] || "";
+const art = t => t?.artwork?.["1000x1000"] || t?.artwork?.["480x480"] || t?.artwork?.["150x150"] || t?.artworkUrl100?.replace("100x100bb", "600x600bb") || "";
 const time = s => Math.floor((s || 0) / 60) + ":" + String(Math.floor((s || 0) % 60)).padStart(2, "0");
-const artist = t => t?.user?.name || "Independent artist";
+const artist = t => t?.artistName || t?.user?.name || "Independent artist";
 const trackId = t => String(t?.id ?? "");
 
 async function api(path) {
@@ -55,7 +57,7 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
-  const [lyrics, setLyrics] = useState([]);
+  const [lyrics, setLyrics] = useState([]);\n  const [lyricsStatus, setLyricsStatus] = useState("idle");
   const [lyricFileName, setLyricFileName] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
   const [palette, setPalette] = useState(["#a9c8ff", "#5976c8", "#111a38"]);
@@ -72,11 +74,19 @@ export default function App() {
     setLoading(true); setError("");
     const start = reset ? 0 : offset;
     try {
-      const data = await api(cataloguePath(q, g, start));
-      setResults(old => reset ? data : [...old, ...data.filter(item => !old.some(existing => existing.id === item.id))]);
-      setOffset(start + data.length);
-      setHasMore(data.length === PAGE_SIZE);
-      if (!data.length && reset) setError("No matches in the open catalogue. Try another spelling or artist.");
+      const [audiusResult, appleResult] = await Promise.allSettled([
+        api(cataloguePath(q, g, start)),
+        reset && start === 0 ? appleSearch(q) : (q.trim() ? appleSearch(q) : Promise.resolve([]))
+      ]);
+      const audius = audiusResult.status === "fulfilled" ? audiusResult.value.map(t => ({ ...t, source: "Audius" })) : [];
+      const apple = appleResult.status === "fulfilled" ? appleResult.value : [];
+      const key = t => (String(t.title || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "|" + artist(t).toLowerCase().replace(/[^a-z0-9]/g, ""));
+      const merged = [...apple, ...audius].filter((t, i, all) => all.findIndex(x => key(x) === key(t)) === i);
+      setResults(old => reset ? merged : [...old, ...merged.filter(item => !old.some(existing => existing.id === item.id))]);
+      setOffset(start + (audius.length || 0));
+      setHasMore(audius.length === PAGE_SIZE);
+      if (!merged.length && reset) setError("No playable matches found. Try the artist name or song title.");
+      else if (!apple.length && !audius.length) setError("Music catalogues are temporarily unavailable. Please retry.");
     } catch (e) { setError(e.message || "Could not load tracks."); }
     finally { setLoading(false); }
   }, [query, genre, offset]);
@@ -106,13 +116,17 @@ export default function App() {
   async function playSelected(item) {
     setTrack(item);
     setRecent(old => [item, ...old.filter(x => x.id !== item.id)].slice(0, 8));
-    setLyrics([]); setLyricFileName(""); setCurrentTime(0); setError(""); setOpen(false);
+    setLyrics([]); setLyricsStatus("loading"); setLyricFileName(""); setCurrentTime(0); setError(""); setOpen(false);
+    fetchSyncedLyrics(item).then(rows => {
+      setLyrics(rows);
+      setLyricsStatus(rows.length ? "ready" : "missing");
+    }).catch(() => setLyricsStatus("missing"));
     const element = audio.current;
     if (!element) return;
     try {
       element.src = stream(item); element.load();
       await element.play();
-    } catch { setError("This stream could not start. Try another result."); }
+    } catch { setError(item.previewUrl ? "This preview could not start." : "This stream could not start. Try another result."); }
   }
   async function togglePlayback() {
     const element = audio.current;
@@ -195,7 +209,7 @@ export default function App() {
         </svg>
         <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + i} className="lyric-word" initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ delay: i * .055, type: "spring", stiffness: 180, damping: 16 }}>{word}<i /></motion.span>)}</div>
         <div className="lyric-next">{lyrics[activeLyric + 1]?.text || ""}</div>
-      </> : <div className="lyric-idle">{track ? "IMPORT A TIMED .LRC FILE TO AWAKEN THE LYRIC CONSTELLATION" : "AURORA · SOUND BECOMES LIGHT"}</div>}
+      </> : <div className="lyric-idle">{track ? (lyricsStatus === "loading" ? "SEARCHING FOR SYNCHRONIZED LYRICS" : lyricsStatus === "missing" ? "NO SYNCHRONIZED LYRICS FOUND FOR THIS TRACK" : "AURORA · SOUND BECOMES LIGHT") : "AURORA · SOUND BECOMES LIGHT"}</div>}
     </div>
 
     <motion.button className="library-trigger" layoutId="aurora-library" onClick={() => open ? setOpen(false) : openLibrary()} aria-label={open ? "Close song chooser" : "Open song chooser"} title="Song universe"><AudioLines size={19} /><span className="trigger-eq"><i /><i /><i /><i /></span></motion.button>
@@ -204,7 +218,7 @@ export default function App() {
     {track && <div className="track-presence"><span className="presence-dot" />{track.title}<b>{artist(track)}</b></div>}
     {track && <div className="lyric-tools">
       <input ref={fileInput} type="file" accept=".lrc,text/plain" onChange={onLyricFile} hidden />
-      <button onClick={() => fileInput.current?.click()}><FileUp size={14} />{lyrics.length ? "CHANGE LYRICS" : "LOAD .LRC LYRICS"}</button>
+      <button onClick={() => fileInput.current?.click()}><FileUp size={14} />{lyrics.length ? "CHANGE LYRICS" : "IMPORT .LRC"}</button>
       {lyricFileName && <span>{lyricFileName}</span>}
     </div>}
     {track && <button className="play-toggle" onClick={togglePlayback} aria-label={playing ? "Pause" : "Play"}>{playing ? "Ⅱ" : "▶"}</button>}
@@ -215,16 +229,16 @@ export default function App() {
           <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>SELECT A FREQUENCY TO ENTER</small></div></div><button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div>
           <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
-          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>OPEN AUDIUS CATALOGUE</span></div>
+          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>APPLE MUSIC + AUDIUS CATALOGUES</span></div>
           {error && <p className="form-error">{error}</p>}
           <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "")} key={item.id} onClick={() => playSelected(item)}>
             <span className="result-art">{art(item) ? <img src={art(item)} alt="" /> : <Disc3 size={21} />}<span className="result-play"><Play size={12} /></span></span>
-            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)}{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{time(item.duration)}</span>
+            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)} · {item.source === "Audius" ? "FULL OPEN STREAM" : "30-SEC PREVIEW"}{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{time(item.duration)}</span>
           </button>)}</div>
           {hasMore && results.length > 0 && <button className="load-more" onClick={() => load({ reset: false })} disabled={loading}>{loading ? "SCANNING..." : "LOAD MORE TRACKS"}</button>}
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
-          <div className="dock-footer"><span>STREAMS FROM AUDIUS · INDEPENDENT OPEN CATALOGUE</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
-          <p className="catalogue-note">The catalogue is not every commercial song worldwide. Mainstream releases may not be available here; AURORA only streams tracks the provider makes available.</p>
+          <div className="dock-footer"><span>APPLE PREVIEWS + AUDIUS STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
+          <p className="catalogue-note">Apple results provide short previews where available; Audius provides full streams for its open catalogue. Full commercial playback depends on the rights holder and a licensed music service.</p>
         </motion.section>
       </motion.div>}
     </AnimatePresence>
