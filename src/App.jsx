@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AudioLines, ChevronDown, Disc3, Music2, Orbit, Sparkles } from "lucide-react";
+import { AudioLines, ChevronDown, Disc3, Maximize2, Music2, Orbit, Sparkles } from "lucide-react";
 
 const stars = Array.from({ length: 115 }, (_, index) => ({
   id: index,
