@@ -8,10 +8,11 @@ on:
     branches:
       - "**"
 
-# Queue every commit for this branch instead of cancelling an in-progress run.
-# Each run checks out its own immutable commit SHA.
+# Give every immutable commit its own run group. GitHub keeps only one pending
+# run per concurrency group, so a branch-only group can replace older pending
+# commits even when cancel-in-progress is false.
 concurrency:
-  group: aurora-ci-${{ github.ref }}
+  group: aurora-ci-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -32,7 +33,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
