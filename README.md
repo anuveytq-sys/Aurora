@@ -1,49 +1,47 @@
 # AURORA
 
-**An immersive, local-first music environment with a minimal sci-fi interface.**
+**A minimal, cinematic music player for discovering and playing open-catalogue music.**
 
-Aurora is designed to feel almost empty until you summon its music portal: a dark atmospheric space, slow orbital motion, subtle stars, warm ambient light, and one compact floating player surface.
+AURORA is designed to feel almost empty until you summon its library: a dark atmospheric space, orbital motion, artwork-led ambient colours, and a compact player.
 
 ## Four-stage roadmap
 
-### Stage 1 — Visual foundation (implemented)
-- Full-screen dark sci-fi environment, animated star field, ambient glow and orbital centerpiece.
-- Compact floating dock, animated mini dock and keyboard controls.
-- Responsive layout and reduced-motion fallback.
+### Stage 1 — Visual foundation
+- Full-screen dark sci-fi environment, star field, ambient glow and orbital centerpiece.
+- Compact floating dock, mini dock and keyboard shortcuts.
 
-### Stage 2 — Spotify Free integration (implemented in source; local verification pending)
-- Uses Spotify's official Embed Player; no unofficial audio extraction, private endpoints, or API key.
-- Accepts Spotify share links and Spotify URIs for tracks, albums, playlists, artists, shows and episodes.
-- Validates supported Spotify content before loading it.
-- Remembers the selected Spotify content locally in the browser.
-- Keeps the official player iframe mounted when the visual dock is collapsed, so the app does not intentionally unload it when you hide the panel.
-- Includes paste-from-clipboard support, replace/disconnect actions and an "Open in Spotify" link.
-- Minimal full-screen experience: orbital center, small status indicators and a single expandable portal.
+### Stage 2 — Search and playback (Audius)
+- Search tracks and artists in the Audius open music catalogue.
+- Trending discovery when the search field is empty.
+- Plays selected catalogue tracks using the Audius stream endpoint and a native audio element.
+- Play/pause, seek, volume, next/previous result and automatic next-track behavior.
+- Remembers the last selected track and recent tracks in browser localStorage.
+- No Spotify link, no Spotify account, and no API key for basic read-only discovery. Audius may apply rate limits; API access and stream availability can change.
+- The Audius catalogue is not every commercial song ever released. Results depend on what creators have made available through Audius.
 
 ### Stage 3 — Dynamic music environment
-- Artwork-derived color palettes when artwork is available.
-- Smooth ambient theme transitions and restrained audio-reactive-inspired motion.
-- Metadata presentation where supported.
-- Lyrics only from appropriately licensed/permitted sources. Spotify recordings must not be synchronised with lyrics or visual media in ways prohibited by Spotify's terms.
+- Ambient theme palette changes when the selected track changes.
+- Track artwork, title and creator appear in the minimal player.
+- Animated orbital centerpiece and animated visualizer modes that respond to playback state.
+- Lyric Constellation visual mode entry point. It currently explains the licensing limitation; it does not display copyrighted lyric text. A full synchronized-lyrics feature requires a provider and rights that permit display and synchronization.
 
 ### Stage 4 — Product polish and local release
-- Settings, saved appearance preferences and accessibility refinements.
-- Browser compatibility checks, error states, performance tuning and production build verification.
-- Optional GitHub Pages-compatible static frontend assessment.
+- Further accessibility, settings, error handling, performance and browser compatibility work.
+- Production build verification and optional static deployment assessment.
 
-## Spotify Free compatibility and limitations
+## Important catalogue and lyrics limitations
 
-- Spotify's official embed is used for playback. Spotify controls and availability are supplied by Spotify and can vary by content, region, browser, account and embed context.
-- Spotify may require the listener to sign in or open content in Spotify; some tracks may only offer previews or may not be playable in the embedded context.
-- Playback is not guaranteed for every item. Autoplay is not forced; use the controls inside Spotify's player.
-- The iframe remains mounted while the AURORA dock is collapsed, but browser/Spotify policies can still affect background playback.
-- AURORA does not scrape Spotify audio, bypass restrictions, or recreate Spotify's private interface.
+- Audius is an open music catalogue, not a universal catalogue of all commercial releases. Some requested songs will not be available.
+- Audius read-only endpoints are documented for search, trending and streaming. Basic reads do not require an API key, but higher rate limits may require one.
+- Lyrics are not bundled with the music stream. AURORA does not scrape lyric websites or reproduce copyrighted lyrics. A licensed lyrics integration is a separate requirement.
+- The current visualizer animates with playback state; it is not yet a calibrated beat detector or a word-by-word lyric synchronizer.
 
 ## Technology
 - React + Vite
 - Framer Motion and CSS animation
-- Spotify official Embed Player
-- Browser localStorage for the last selected Spotify item
+- Audius REST API for catalogue search and streams
+- Native HTML audio playback
+- Browser localStorage for last track and recent history
 
 ## Run locally
 
@@ -52,8 +50,8 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite. Paste a Spotify share link (or Spotify URI) into the portal. Use the Spotify player controls to start playback, then collapse the portal. Press Ctrl/Cmd + K to toggle the portal or Esc to collapse it.
+Open the local URL printed by Vite. Search for a song or artist, select a result, and use the compact player. Collapse the library to return to the cinematic screen. Press Space to play/pause, Ctrl/Cmd + K to toggle the library, or Esc to close it.
 
-## Current status
+## Verification status
 
-Stage 1 and Stage 2 source changes are committed to the `phase-2-spotify-integration` branch. The code has not yet been installed, built or browser-tested in this environment. Run `npm install` and `npm run build` before treating this stage as verified.
+Stage 2 and Stage 3 source changes are on the `stage-2-audius-stage-3-visuals` branch. They have not yet been installed, built, or browser-tested in this environment. Verify with `npm install` and `npm run build`, then test actual track playback in a browser.
