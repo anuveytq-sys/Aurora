@@ -6,7 +6,7 @@ Aurora is designed around a dark atmospheric desktop experience: glowing boundar
 
 ## Four-stage roadmap
 
-### Stage 1 — Visual foundation (started)
+### Stage 1 — Visual foundation (implemented; local verification pending)
 - Full-screen dark sci-fi environment.
 - Animated star field and ambient glow.
 - Central floating dock with open/close transitions.
@@ -47,4 +47,4 @@ npm run dev
 ```
 
 ## Current status
-Stage 1 foundation is being implemented. Spotify playback is not yet connected in this stage.
+Stage 1 source files are committed to `main`. The visual shell, animated star field, floating dock, mini dock, and keyboard controls are in place. A local install/build/browser check is still required. Spotify playback is intentionally deferred to Stage 2.
