@@ -142,8 +142,7 @@ function normalizeLiriQoCandidate(candidate, response) {
 
   const hasNativeWordTiming = rows.some(line => line.words.length > 0) &&
     (candidate.nativeWordTiming === true || candidate.nativeRichsync === true ||
-      candidate.syncLevel === "word" || candidate.syncLevel === "syllable" ||
-      rows.some(line => line.words.length > 0));
+      candidate.syncLevel === "word" || candidate.syncLevel === "syllable");
   if (!hasNativeWordTiming) return null;
   return {
     rows,
@@ -192,6 +191,50 @@ async function fetchLiriQoWordLyrics(item) {
   }
 }
 
+
+async function fetchLyricaWordLyrics(item) {
+  const params = new URLSearchParams({
+    artist: artist(item),
+    song: item.title || "",
+    timestamps: "true",
+    word: "true"
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 16000);
+  try {
+    const response = await fetch("https://wilooper-lyrica.hf.space/lyrics/?" + params.toString(), {
+      signal: controller.signal,
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const data = payload?.data;
+    if (payload?.status !== "success" || !data || data.sync_level !== "word") return null;
+    if (data.title && cleanMatch(data.title) !== cleanMatch(item.title)) return null;
+    if (data.artist && artistMatchScore(data.artist, artist(item)) < .55) return null;
+    const rows = (Array.isArray(data.timed_lyrics) ? data.timed_lyrics : []).map(line => {
+      const words = (Array.isArray(line.words) ? line.words : []).map(word => ({
+        text: String(word.text || "").trim(),
+        at: Number(word.start) / 1000,
+        end: Number(word.end) / 1000
+      })).filter(word => word.text && Number.isFinite(word.at)).sort((a,b) => a.at-b.at);
+      return {
+        at: Number(line.start_time) / 1000,
+        end: Number(line.end_time) / 1000,
+        text: String(line.text || words.map(word => word.text).join("")).trim(),
+        words
+      };
+    }).filter(line => Number.isFinite(line.at) && line.text && line.words.length)
+      .sort((a,b) => a.at-b.at);
+    if (!rows.length) return null;
+    return { rows, wordSynced: true, estimated: false, source: data.source || "Lyrica" };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchSyncedLyrics(item) {
   const key = [
     cleanMatch(item.title),
@@ -207,6 +250,11 @@ async function fetchSyncedLyrics(item) {
   if (rich) {
     lyricCache.set(key, rich);
     return rich;
+  }
+  const alternateRich = await fetchLyricaWordLyrics(item);
+  if (alternateRich) {
+    lyricCache.set(key, alternateRich);
+    return alternateRich;
   }
 
   // LRCLIB remains the fallback for verified line-timed lyrics. It does not
