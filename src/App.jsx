@@ -668,6 +668,8 @@ export default function App() {
 
   async function generateAiLyricsSync() {
     if (!track) { setAiStatus("Choose a song first."); return; }
+    // Invalidate any slower catalogue callback so it cannot overwrite the AI result.
+    lyricRequestRef.current += 1;
     setAiBusy(true); setAiStatus("Finding source lyrics...");
     try {
       const params = new URLSearchParams({
