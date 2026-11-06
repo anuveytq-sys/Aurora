@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AudioLines, Disc3, Headphones, Music2, Play, Search, X, FileUp, ExternalLink, Youtube } from "lucide-react";
+import { AudioLines, Disc3, Headphones, Play, Search, X, FileUp } from "lucide-react";
 
 const API = "https://api.audius.co/v1";
 const APP_NAME = "AURORA";
@@ -23,7 +23,7 @@ async function api(path) {
   return json.data || [];
 }
 function stream(track) {
-  return track.previewUrl || (API + "/tracks/" + encodeURIComponent(track.id) + "/stream?app_name=" + APP_NAME);
+  return API + "/tracks/" + encodeURIComponent(track.id) + "/stream?app_name=" + APP_NAME;
 }
 function normalizeApple(t) {
   return {
@@ -382,17 +382,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [palette, setPalette] = useState(["#a9c8ff", "#5976c8", "#111a38"]);
   const [sourceLabel, setSourceLabel] = useState("AUDIO REACTIVE");
-  const [youtubeMode, setYoutubeMode] = useState(false);
-  const [youtubeSearch, setYoutubeSearch] = useState("");
-  const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [youtubeMeta, setYoutubeMeta] = useState("");
-  const [youtubeId, setYoutubeId] = useState("");
-  const [youtubeError, setYoutubeError] = useState("");
-  const [youtubeReady, setYoutubeReady] = useState(false);
   const audio = useRef(null);
-  const youtubeMount = useRef(null);
-  const youtubePlayer = useRef(null);
-  const youtubePlaying = useRef(false);
   const fileInput = useRef(null);
   const mainRef = useRef(null);
   const analyserRef = useRef(null);
@@ -409,19 +399,16 @@ export default function App() {
     setLoading(true); setError("");
     const start = reset ? 0 : offset;
     try {
-      const [audiusResult, appleResult] = await Promise.allSettled([
-        api(cataloguePath(q, g, start)),
-        reset && start === 0 ? appleSearch(q) : (q.trim() ? appleSearch(q) : Promise.resolve([]))
-      ]);
-      const audius = audiusResult.status === "fulfilled" ? audiusResult.value.map(t => ({ ...t, source: "Audius" })) : [];
-      const apple = appleResult.status === "fulfilled" ? appleResult.value : [];
+      const audius = (await api(cataloguePath(q, g, start)))
+        .filter(t => t && t.id && t.title && Number(t.duration) > 0)
+        .map(t => ({ ...t, source: "Audius", duration: Number(t.duration) }));
       const key = t => (String(t.title || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "|" + artist(t).toLowerCase().replace(/[^a-z0-9]/g, ""));
-      const merged = [...apple, ...audius].filter((t, i, all) => all.findIndex(x => key(x) === key(t)) === i);
+      const merged = audius.filter((t, i, all) => all.findIndex(x => key(x) === key(t)) === i);
       setResults(old => reset ? merged : [...old, ...merged.filter(item => !old.some(existing => existing.id === item.id))]);
-      setOffset(start + (audius.length || 0));
+      setOffset(start + audius.length);
       setHasMore(audius.length === PAGE_SIZE);
-      if (!merged.length && reset) setError("No playable matches found. Try the artist name or song title.");
-      else if (!apple.length && !audius.length) setError("Music catalogues are temporarily unavailable. Please retry.");
+      if (!merged.length && reset) setError("No full-length open-stream matches found. Try another title or artist.");
+      
     } catch (e) { setError(e.message || "Could not load tracks."); }
     finally { setLoading(false); }
   }, [query, genre, offset]);
@@ -502,7 +489,7 @@ export default function App() {
       element.src = stream(item);
       element.load();
       await element.play();
-    } catch { setError(item.previewUrl ? "This preview could not start." : "This stream could not start. Try another result."); }
+    } catch { setError("The full-length stream could not start. Try another track."); }
   }
   async function togglePlayback() {
     const element = audio.current;
@@ -514,86 +501,6 @@ export default function App() {
       } catch { try { await element.play(); } catch { setError("Playback failed. Choose another track."); } }
     } else element.pause();
   }
-  function youtubeSearchSubmit(event) {
-    event.preventDefault();
-    const q = youtubeSearch.trim();
-    if (q) window.open("https://www.youtube.com/results?search_query=" + encodeURIComponent(q), "_blank", "noopener,noreferrer");
-  }
-  async function youtubeLoadSubmit(event) {
-    event.preventDefault();
-    const raw = youtubeUrl.trim();
-    let id = raw;
-    try {
-      const url = new URL(raw);
-      id = url.hostname.includes("youtu.be") ? url.pathname.split("/").filter(Boolean)[0] : (url.searchParams.get("v") || url.pathname.split("/").filter(Boolean).pop());
-    } catch {}
-    if (!/^[A-Za-z0-9_-]{11}$/.test(id)) { setYoutubeError("Paste a valid YouTube video link."); return; }
-    setYoutubeError("");
-    setYoutubeReady(false);
-    setYoutubeId(id);
-    youtubePlaying.current = false;
-    const parts = youtubeMeta.split(" — ");
-    let title = parts[0]?.trim() || "";
-    let artistName = parts.slice(1).join(" — ").trim() || "YouTube";
-    if (!title) {
-      try {
-        const res = await fetch("https://www.youtube.com/oembed?url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + id) + "&format=json");
-        if (res.ok) { const meta = await res.json(); title = meta.title || "YouTube video"; artistName = meta.author_name || artistName; }
-      } catch {}
-    }
-    const item = { id: "youtube-" + id, title: title || "YouTube video", artistName, duration: 0, source: "YouTube" };
-    setTrack(item);
-    setLyrics([]);
-    setLyricsStatus("loading");
-    setLyricFileName("");
-    setCurrentTime(0);
-    lastUiTimeRef.current = -1;
-    const requestId = ++lyricRequestRef.current;
-    fetchSyncedLyrics(item, result => {
-      if (requestId !== lyricRequestRef.current) return;
-      setLyrics(result.rows);
-      setLyricsStatus(result.rows.length ? "ready" : "missing");
-    }).then(result => {
-      if (requestId !== lyricRequestRef.current) return;
-      setLyrics(result.rows);
-      setLyricsStatus(result.rows.length ? "ready" : "missing");
-    }).catch(() => { if (requestId === lyricRequestRef.current) setLyricsStatus("missing"); });
-  }
-  useEffect(() => {
-    if (!youtubeId || !youtubeMount.current) return;
-    let cancelled = false;
-    const mountPlayer = () => {
-      if (cancelled || !window.YT?.Player || !youtubeMount.current) return;
-      if (youtubePlayer.current) { try { youtubePlayer.current.destroy(); } catch {} }
-      youtubePlayer.current = new window.YT.Player(youtubeMount.current, {
-        videoId: youtubeId,
-        playerVars: { playsinline: 1, rel: 0, origin: window.location.origin },
-        events: {
-          onReady: () => { if (!cancelled) setYoutubeReady(true); },
-          onStateChange: event => {
-            const state = window.YT.PlayerState;
-            const active = event.data === state.PLAYING;
-            youtubePlaying.current = active;
-            setPlaying(active);
-          },
-          onError: event => setYoutubeError(event.data === 101 || event.data === 150 ? "This video does not allow embedded playback." : "YouTube playback is unavailable for this video.")
-        }
-      });
-    };
-    if (window.YT?.Player) mountPlayer();
-    else {
-      const prior = window.onYouTubeIframeAPIReady;
-      window.onYouTubeIframeAPIReady = () => { try { prior?.(); } catch {} mountPlayer(); };
-      if (!document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
-        const script = document.createElement("script");
-        script.src = "https://www.youtube.com/iframe_api";
-        script.async = true;
-        script.onerror = () => setYoutubeError("Could not load the YouTube player.");
-        document.head.appendChild(script);
-      }
-    }
-    return () => { cancelled = true; youtubePlaying.current = false; if (youtubePlayer.current) { try { youtubePlayer.current.destroy(); } catch {} youtubePlayer.current = null; } };
-  }, [youtubeId]);
   useEffect(() => {
     let frame;
     const tick = timestamp => {
@@ -637,25 +544,13 @@ export default function App() {
         const rhythmic = Math.pow(Math.max(0, Math.sin(beatPhase * Math.PI * 2)), 5);
         envelopeRef.current = Math.max(rhythmic * .72, envelopeRef.current * Math.exp(-elapsed * 3));
         pulse = envelopeRef.current;
-      } else if (youtubePlaying.current && youtubePlayer.current) {
-        const ytTime = Number(youtubePlayer.current.getCurrentTime?.() || 0);
-        const phase = (ytTime % .52) / .52;
-        const rhythmic = Math.pow(Math.max(0, Math.sin(phase * Math.PI * 2)), 5);
-        envelopeRef.current = Math.max(rhythmic * .48, envelopeRef.current * Math.exp(-elapsed * 3));
-        pulse = envelopeRef.current;
       } else {
         envelopeRef.current *= Math.exp(-elapsed * 7);
         lastLowRef.current = 0;
       }
       mainRef.current?.style.setProperty("--beat", String(pulse));
       mainRef.current?.style.setProperty("--beat-glow", String(.16 + pulse * .84));
-      if (youtubePlaying.current && youtubePlayer.current) {
-        const now = Number(youtubePlayer.current.getCurrentTime?.() || 0);
-        if (lastUiTimeRef.current < 0 || Math.abs(now - lastUiTimeRef.current) >= .075) {
-          lastUiTimeRef.current = now;
-          setCurrentTime(now);
-        }
-      } else if (element && !element.paused) {
+      if (element && !element.paused) {
         const now = element.currentTime;
         if (lastUiTimeRef.current < 0 || Math.abs(now - lastUiTimeRef.current) >= .075) {
           lastUiTimeRef.current = now;
@@ -712,8 +607,9 @@ export default function App() {
   function changeGenre(next) { setGenre(next); setOffset(0); load({ reset: true, q: query, g: next }); }
   function openLibrary() { setOpen(true); if (!results.length && !loading) load({ reset: true, q: "", g: "All" }); }
 
-  return <main ref={mainRef} className={"universe aurora-universe " + (playing ? "is-playing" : "")} style={{ "--accent": palette[0], "--glow": palette[1], "--deep": palette[2] }}>
+  return <main ref={mainRef} onPointerMove={event => { const rect = event.currentTarget.getBoundingClientRect(); event.currentTarget.style.setProperty("--pointer-x", `${event.clientX - rect.left}px`); event.currentTarget.style.setProperty("--pointer-y", `${event.clientY - rect.top}px`); }} className={"universe aurora-universe " + (playing ? "is-playing" : "")} style={{ "--accent": palette[0], "--glow": palette[1], "--deep": palette[2] }}>
     <div className="noise" />
+    <div className="cursor-aura" aria-hidden="true" />
     <div className="star-field">{Array.from({ length: 155 }, (_, i) => <span key={i} className="star" style={{ left: ((i * 37.17) % 100) + "%", top: ((i * 61.73) % 100) + "%", animationDelay: ((i % 17) * -.4) + "s" }} />)}</div>
     <svg className="star-web" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><g>{links.map(([a, b], i) => <line key={i} x1={stars[a].x} y1={stars[a].y} x2={stars[b].x} y2={stars[b].y} style={{ "--line-delay": (i % 9) * .17 + "s" }} />)}</g><g>{stars.map(s => <circle key={s.id} cx={s.x} cy={s.y} r={s.id % 5 === 0 ? .16 : .1} />)}</g></svg>
 
@@ -742,36 +638,20 @@ export default function App() {
     <AnimatePresence>
       {open && <motion.div className="chooser-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .22 }}>
         <motion.section layoutId="aurora-library" className="music-dock aurora-dock" initial={{ opacity: 0, scale: .92, y: 24, filter: "blur(12px)" }} animate={{ opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }} exit={{ opacity: 0, scale: .08, x: -window.innerWidth * .42, y: -window.innerHeight * .38, filter: "blur(12px)" }} transition={{ type: "spring", stiffness: 175, damping: 22 }}>
-          <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>{youtubeMode ? "YOUTUBE / SYNCHRONIZED LYRICS" : "SELECT A FREQUENCY TO ENTER"}</small></div></div><div style={{display:"flex",gap:8}}>{!youtubeMode && <button className="close-button" onClick={() => setYoutubeMode(true)} aria-label="Open YouTube" title="YouTube"><Youtube size={17}/></button>}{youtubeMode && <button className="close-button" onClick={() => setYoutubeMode(false)} aria-label="Back to music library"><Music2 size={17}/></button>}<button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div></div>
-          {youtubeMode ? <div style={{display:"grid",gap:12,padding:"12px 2px",color:"var(--accent)"}}>
-            <form onSubmit={youtubeSearchSubmit} style={{display:"flex",gap:8}}>
-              <input value={youtubeSearch} onChange={e=>setYoutubeSearch(e.target.value)} placeholder="Search YouTube for any song or artist..." aria-label="Search YouTube" style={{flex:1,minWidth:0}}/>
-              <button type="submit">SEARCH</button>
-            </form>
-            <form onSubmit={youtubeLoadSubmit} style={{display:"grid",gap:8}}>
-              <input value={youtubeUrl} onChange={e=>setYoutubeUrl(e.target.value)} placeholder="Paste the chosen YouTube video link..." aria-label="YouTube video URL"/>
-              <input value={youtubeMeta} onChange={e=>setYoutubeMeta(e.target.value)} placeholder="Song title — artist (recommended for lyric match)" aria-label="Song title and artist"/>
-              <button type="submit">PLAY VIDEO + FIND SYNCED LYRICS</button>
-            </form>
-            {youtubeError && <p className="form-error">{youtubeError}</p>}
-            {youtubeId && <div style={{position:"relative",width:"100%",aspectRatio:"16 / 9",background:"#05070d",borderRadius:12,overflow:"hidden"}}>
-              <div ref={youtubeMount} style={{position:"absolute",inset:0,width:"100%",height:"100%"}}/>
-              {!youtubeReady && <span style={{position:"absolute",inset:0,display:"grid",placeItems:"center",pointerEvents:"none"}}>CONNECTING YOUTUBE PLAYER</span>}
-            </div>}
-            <p className="catalogue-note">Search opens official YouTube results in a new tab. Paste a selected video's link here to play it inside Aurora. Lyrics follow playback time when a matching timed lyric source is available. Genuine word-by-word sync requires word timestamps; otherwise the existing line-synced fallback is used. Some videos disable embedding.</p>
-          </div> : <><form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
+          <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>SELECT A FREQUENCY TO ENTER</small></div></div><button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div>
+          <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
-          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>APPLE MUSIC + AUDIUS CATALOGUES</span></div>
+          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>FULL-LENGTH AUDIUS STREAMS</span></div>
           {error && <p className="form-error">{error}</p>}
           <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "")} key={item.id} onClick={() => playSelected(item)}>
             <span className="result-art">{art(item) ? <img src={art(item)} alt="" /> : <Disc3 size={21} />}<span className="result-play"><Play size={12} /></span></span>
-            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)} · {item.source === "Audius" ? "FULL OPEN STREAM" : "30-SEC PREVIEW"}{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{time(item.duration)}</span>
+            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)} · FULL-LENGTH STREAM{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{time(item.duration)}</span>
           </button>)}</div>
           {hasMore && results.length > 0 && <button className="load-more" onClick={() => load({ reset: false })} disabled={loading}>{loading ? "SCANNING..." : "LOAD MORE TRACKS"}</button>}
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
-          <div className="dock-footer"><span>APPLE PREVIEWS + AUDIUS STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
-          <p className="catalogue-note">Apple results provide short previews where available; Audius provides full streams for its open catalogue. Full commercial playback depends on the rights holder and a licensed music service.</p>
-          </>}
+          <div className="dock-footer"><span>FULL-LENGTH OPEN STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
+          <p className="catalogue-note">Only full-length streams are listed here. Commercial catalogue coverage depends on music licensing; short preview clips are intentionally excluded.</p>
+
         </motion.section>
       </motion.div>}
     </AnimatePresence>
