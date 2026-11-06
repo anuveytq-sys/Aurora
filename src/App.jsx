@@ -343,8 +343,8 @@ function providerSearchLinks(query) {
   return [
     { name: "APPLE MUSIC", url: "https://music.apple.com/in/search?term=" + term },
     { name: "SPOTIFY", url: "https://open.spotify.com/search/" + term },
-    { name: "GAANA", url: "https://gaana.com/search/" + term },
-    { name: "JIOSAAVN", url: "https://www.jiosaavn.com/search/" + term }
+    { name: "GAANA", url: "https://gaana.com/" },
+    { name: "JIOSAAVN", url: "https://www.jiosaavn.com/" }
   ];
 }
 function parseLrc(source) {
