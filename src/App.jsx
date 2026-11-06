@@ -315,31 +315,46 @@ function cataloguePath(query, genre, offset) {
   return "/tracks/" + (query.trim() ? "search" : "trending") + "?" + params.toString();
 }
 
-// Apple’s public iTunes Search endpoint is used for discovery metadata only.
-// Its 30-second previewUrl is deliberately never read or played.
+// Apple’s public iTunes Search endpoint supplies catalogue metadata and its
+// official 30-second previews. Search several storefronts so regional releases
+// and catalogue differences are not missed.
 async function searchAppleMetadata(query) {
   if (!query.trim()) return [];
-  const params = new URLSearchParams({ term: query.trim(), entity: "song", limit: "25", country: "IN" });
-  const response = await fetch("https://itunes.apple.com/search?" + params.toString(), {
-    headers: { Accept: "application/json" }
-  });
-  if (!response.ok) throw new Error("Apple catalogue search is temporarily unavailable.");
-  const payload = await response.json();
-  return (payload.results || [])
-    .filter(item => item.kind === "song" && item.trackId && item.trackName && item.artistName)
-    .map(item => ({
-      id: "apple-catalog-" + item.trackId,
-      title: item.trackName,
-      artistName: item.artistName,
-      albumName: item.collectionName || "",
-      artworkUrl100: item.artworkUrl100 || "",
-      duration: Number(item.trackTimeMillis || 0) / 1000,
-      source: "Apple / iTunes",
-      previewUrl: item.previewUrl || "",
-      preview: Boolean(item.previewUrl),
-      playable: Boolean(item.previewUrl),
-      openUrl: "https://music.apple.com/in/search?term=" + encodeURIComponent(item.trackName + " " + item.artistName)
-    }));
+  const countries = ["IN", "US", "GB", "CA", "AU", "NZ"];
+  const requests = await Promise.allSettled(countries.map(async country => {
+    const params = new URLSearchParams({ term: query.trim(), entity: "song", limit: "200", country });
+    const response = await fetch("https://itunes.apple.com/search?" + params.toString(), {
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) throw new Error("Apple " + country + " catalogue unavailable");
+    const payload = await response.json();
+    return (payload.results || [])
+      .filter(item => item.kind === "song" && item.trackId && item.trackName && item.artistName)
+      .map(item => ({
+        id: "apple-catalog-" + item.trackId,
+        title: item.trackName,
+        artistName: item.artistName,
+        albumName: item.collectionName || "",
+        artworkUrl100: item.artworkUrl100 || "",
+        duration: Number(item.trackTimeMillis || 0) / 1000,
+        source: "Apple / iTunes",
+        previewUrl: item.previewUrl || "",
+        preview: Boolean(item.previewUrl),
+        playable: Boolean(item.previewUrl),
+        openUrl: "https://music.apple.com/" + country.toLowerCase() + "/search?term=" + encodeURIComponent(item.trackName + " " + item.artistName)
+      }));
+  }));
+  const rows = requests.flatMap(result => result.status === "fulfilled" ? result.value : []);
+  // Prefer a regional copy with a playable preview when the same recording
+  // appears in more than one storefront.
+  const unique = new Map();
+  for (const item of rows) {
+    const key = cleanMatch(item.title) + "|" + cleanMatch(item.artistName);
+    const previous = unique.get(key);
+    if (!previous || (!previous.preview && item.preview)) unique.set(key, item);
+  }
+  if (!rows.length) throw new Error("Apple catalogue search is temporarily unavailable.");
+  return [...unique.values()];
 }
 function parseLrc(source) {
   const rows = [];
@@ -755,7 +770,7 @@ export default function App() {
           </motion.div>}</AnimatePresence>
           <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
-          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>{query.trim() ? "AUDIUS PLAYBACK + APPLE DISCOVERY" : "FULL-LENGTH AUDIUS STREAMS"}</span></div>
+          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>{query.trim() ? "AUDIUS + 6 APPLE STOREFRONTS" : "FULL-LENGTH AUDIUS STREAMS"}</span></div>
           {error && <p className="form-error">{error}</p>}
           <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "") + (!item.playable ? " discovery-result" : "")} key={item.id} onClick={() => item.playable ? playSelected(item) : window.open(item.openUrl, "_blank", "noopener,noreferrer")}>
             <span className="result-art">{art(item) ? <img src={art(item)} alt="" /> : <Disc3 size={21} />}<span className="result-play"><Play size={12} /></span></span>
@@ -764,7 +779,7 @@ export default function App() {
           {hasMore && results.length > 0 && <button className="load-more" onClick={() => load({ reset: false })} disabled={loading}>{loading ? "SCANNING..." : "LOAD MORE TRACKS"}</button>}
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
           <div className="dock-footer"><span>FULL-LENGTH OPEN STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
-          <p className="catalogue-note">Audius entries play full-length where available. Apple results include playable 30-second previews when supplied by Apple; remaining matches are discovery-only. AI lyric timing is approximate unless a synchronized source provides verified timestamps.</p>
+          <p className="catalogue-note">Search combines Audius with Apple catalogue results across India, US, UK, Canada, Australia and New Zealand. Apple 30-second previews play here when supplied; Audius tracks stream full-length where available.</p>
 
         </motion.section>
       </motion.div>}
