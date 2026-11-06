@@ -637,13 +637,25 @@ export default function App() {
         const rhythmic = Math.pow(Math.max(0, Math.sin(beatPhase * Math.PI * 2)), 5);
         envelopeRef.current = Math.max(rhythmic * .72, envelopeRef.current * Math.exp(-elapsed * 3));
         pulse = envelopeRef.current;
+      } else if (youtubePlaying.current && youtubePlayer.current) {
+        const ytTime = Number(youtubePlayer.current.getCurrentTime?.() || 0);
+        const phase = (ytTime % .52) / .52;
+        const rhythmic = Math.pow(Math.max(0, Math.sin(phase * Math.PI * 2)), 5);
+        envelopeRef.current = Math.max(rhythmic * .48, envelopeRef.current * Math.exp(-elapsed * 3));
+        pulse = envelopeRef.current;
       } else {
         envelopeRef.current *= Math.exp(-elapsed * 7);
         lastLowRef.current = 0;
       }
       mainRef.current?.style.setProperty("--beat", String(pulse));
       mainRef.current?.style.setProperty("--beat-glow", String(.16 + pulse * .84));
-      if (element && !element.paused) {
+      if (youtubePlaying.current && youtubePlayer.current) {
+        const now = Number(youtubePlayer.current.getCurrentTime?.() || 0);
+        if (lastUiTimeRef.current < 0 || Math.abs(now - lastUiTimeRef.current) >= .075) {
+          lastUiTimeRef.current = now;
+          setCurrentTime(now);
+        }
+      } else if (element && !element.paused) {
         const now = element.currentTime;
         if (lastUiTimeRef.current < 0 || Math.abs(now - lastUiTimeRef.current) >= .075) {
           lastUiTimeRef.current = now;
