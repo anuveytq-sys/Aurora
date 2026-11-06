@@ -610,6 +610,7 @@ export default function App() {
   return <main ref={mainRef} onPointerMove={event => { const rect = event.currentTarget.getBoundingClientRect(); event.currentTarget.style.setProperty("--pointer-x", `${event.clientX - rect.left}px`); event.currentTarget.style.setProperty("--pointer-y", `${event.clientY - rect.top}px`); }} className={"universe aurora-universe " + (playing ? "is-playing" : "")} style={{ "--accent": palette[0], "--glow": palette[1], "--deep": palette[2] }}>
     <div className="noise" />
     <div className="cursor-aura" aria-hidden="true" />
+    <div className="edge-energy" aria-hidden="true" />
     <div className="star-field">{Array.from({ length: 155 }, (_, i) => <span key={i} className="star" style={{ left: ((i * 37.17) % 100) + "%", top: ((i * 61.73) % 100) + "%", animationDelay: ((i % 17) * -.4) + "s" }} />)}</div>
     <svg className="star-web" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><g>{links.map(([a, b], i) => <line key={i} x1={stars[a].x} y1={stars[a].y} x2={stars[b].x} y2={stars[b].y} style={{ "--line-delay": (i % 9) * .17 + "s" }} />)}</g><g>{stars.map(s => <circle key={s.id} cx={s.x} cy={s.y} r={s.id % 5 === 0 ? .16 : .1} />)}</g></svg>
 
