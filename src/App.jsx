@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AudioLines, Disc3, Headphones, Play, Search, X, FileUp } from "lucide-react";
+import { AudioLines, Disc3, Headphones, Play, Search, X, FileUp, Settings, Sparkles } from "lucide-react";
 
 const API = "https://api.audius.co/v1";
 const APP_NAME = "AURORA";
 const PAGE_SIZE = 30;
 const LYRICS_API = "https://lrclib.net/api";
 const STORAGE = "aurora.audius.last-track.v1";
+const OPENROUTER_STORAGE = "aurora.openrouter.settings.v1";
 const genres = ["All", "Electronic", "Hip-Hop/Rap", "Pop", "Rock", "Ambient", "Classical", "Jazz", "House", "Techno"];
 const stars = Array.from({ length: 34 }, (_, i) => ({ id: i, x: 5 + (i * 37.17) % 90, y: 8 + (i * 61.73) % 82 }));
 const links = Array.from({ length: 46 }, (_, i) => [i % stars.length, (i * 7 + 5) % stars.length]).filter(([a, b]) => a !== b);
@@ -333,8 +334,10 @@ async function searchAppleMetadata(query) {
       albumName: item.collectionName || "",
       artworkUrl100: item.artworkUrl100 || "",
       duration: Number(item.trackTimeMillis || 0) / 1000,
-      source: "Apple / iTunes metadata",
-      playable: false,
+      source: "Apple / iTunes",
+      previewUrl: item.previewUrl || "",
+      preview: Boolean(item.previewUrl),
+      playable: Boolean(item.previewUrl),
       openUrl: "https://music.apple.com/in/search?term=" + encodeURIComponent(item.trackName + " " + item.artistName)
     }));
 }
@@ -365,8 +368,8 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [genre, setGenre] = useState("All");
   const [results, setResults] = useState([]);
-  const [track, setTrack] = useState(() => { try { const saved = JSON.parse(localStorage.getItem(STORAGE) || "null"); return String(saved?.id || "").startsWith("apple-") ? null : saved; } catch { return null; } });
-  const [recent, setRecent] = useState(() => { try { return JSON.parse(localStorage.getItem("aurora.recent") || "[]").filter(item => !String(item?.id || "").startsWith("apple-")); } catch { return []; } });
+  const [track, setTrack] = useState(() => { try { const saved = JSON.parse(localStorage.getItem(STORAGE) || "null"); return saved?.preview ? saved : String(saved?.id || "").startsWith("apple-") ? null : saved; } catch { return null; } });
+  const [recent, setRecent] = useState(() => { try { return JSON.parse(localStorage.getItem("aurora.recent") || "[]").filter(item => !String(item?.id || "").startsWith("apple-") || item?.preview); } catch { return []; } });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [playing, setPlaying] = useState(false);
@@ -378,6 +381,12 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [palette, setPalette] = useState(["#a9c8ff", "#5976c8", "#111a38"]);
   const [sourceLabel, setSourceLabel] = useState("AUDIO REACTIVE");
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+  const [openRouterKey, setOpenRouterKey] = useState(() => { try { return JSON.parse(localStorage.getItem(OPENROUTER_STORAGE) || "{}").key || ""; } catch { return ""; } });
+  const [openRouterModel, setOpenRouterModel] = useState(() => { try { return JSON.parse(localStorage.getItem(OPENROUTER_STORAGE) || "{}").model || "openrouter/free"; } catch { return "openrouter/free"; } });
+  const [aiStatus, setAiStatus] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [lyricsEstimated, setLyricsEstimated] = useState(false);
   const audio = useRef(null);
   const fileInput = useRef(null);
   const mainRef = useRef(null);
@@ -470,7 +479,7 @@ export default function App() {
     const requestId = ++lyricRequestRef.current;
     setTrack(item);
     setRecent(old => [item, ...old.filter(x => x.id !== item.id)].slice(0, 8));
-    setLyrics([]); setLyricsStatus("loading"); setLyricFileName(""); setCurrentTime(0); lastUiTimeRef.current = -1;
+    setLyrics([]); setLyricsStatus("loading"); setLyricFileName(""); setLyricsEstimated(false); setCurrentTime(0); lastUiTimeRef.current = -1;
     setError(""); setOpen(false); envelopeRef.current = 0; lastLowRef.current = 0;
     fetchSyncedLyrics(item, result => {
       if (requestId !== lyricRequestRef.current) return;
@@ -496,10 +505,10 @@ export default function App() {
     }
     try {
       element.pause();
-      element.src = stream(item);
+      element.src = item.preview && item.previewUrl ? item.previewUrl : stream(item);
       element.load();
       await element.play();
-    } catch { setError("The full-length stream could not start. Try another track."); }
+    } catch { setError(item.preview ? "The 30-second preview could not start. Try another track." : "The full-length stream could not start. Try another track."); }
   }
   async function togglePlayback() {
     const element = audio.current;
@@ -607,7 +616,7 @@ export default function App() {
     reader.onload = () => {
       const parsed = parseLrc(String(reader.result || ""));
       if (!parsed.length) { setError("That file has no readable LRC timestamps. Choose a valid .lrc file."); return; }
-      setLyrics(parsed); setLyricFileName(file.name); setError("");
+      setLyrics(parsed); setLyricFileName(file.name); setLyricsEstimated(false); setError("");
     };
     reader.onerror = () => setError("Could not read that lyrics file.");
     reader.readAsText(file);
@@ -616,6 +625,90 @@ export default function App() {
   function runSearch(event) { event?.preventDefault(); setOffset(0); load({ reset: true, q: query, g: genre }); }
   function changeGenre(next) { setGenre(next); setOffset(0); load({ reset: true, q: query, g: next }); }
   function openLibrary() { setOpen(true); if (!results.length && !loading) load({ reset: true, q: "", g: "All" }); }
+
+  async function openRouterCall(messages, maxTokens = 1200) {
+    if (!openRouterKey.trim()) throw new Error("Add your OpenRouter API key in Aurora settings first.");
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + openRouterKey.trim(),
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://anuveytq-sys.github.io/Aurora/",
+        "X-OpenRouter-Title": "AURORA Music Universe"
+      },
+      body: JSON.stringify({
+        model: openRouterModel.trim() || "openrouter/free",
+        messages,
+        temperature: 0.15,
+        max_tokens: maxTokens
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload?.error?.message || ("OpenRouter request failed (" + response.status + ")."));
+    const content = payload?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("The selected AI model returned an empty response.");
+    return typeof content === "string" ? content : JSON.stringify(content);
+  }
+
+  async function testOpenRouter() {
+    setAiBusy(true); setAiStatus("Testing OpenRouter connection...");
+    try {
+      const answer = await openRouterCall([{ role: "user", content: "Reply with exactly: AURORA_CONNECTED" }], 30);
+      if (!answer.includes("AURORA_CONNECTED")) throw new Error("The model responded, but the connection test phrase was not returned.");
+      setAiStatus("Connection successful · " + (openRouterModel.trim() || "openrouter/free"));
+    } catch (e) { setAiStatus(e.message || "Connection test failed."); }
+    finally { setAiBusy(false); }
+  }
+
+  function saveOpenRouterSettings() {
+    if (!openRouterKey.trim()) { setAiStatus("Enter an OpenRouter API key before saving."); return; }
+    localStorage.setItem(OPENROUTER_STORAGE, JSON.stringify({ key: openRouterKey.trim(), model: openRouterModel.trim() || "openrouter/free" }));
+    setAiStatus("Settings saved on this device.");
+  }
+
+  async function generateAiLyricsSync() {
+    if (!track) { setAiStatus("Choose a song first."); return; }
+    setAiBusy(true); setAiStatus("Finding source lyrics...");
+    try {
+      const params = new URLSearchParams({
+        track_name: track.title || "",
+        artist_name: artist(track),
+        ...(track.albumName ? { album_name: track.albumName } : {}),
+        ...(track.duration > 0 && track.duration < 3600 ? { duration: String(Math.round(track.duration)) } : {})
+      });
+      const record = await lyricRequest(LYRICS_API + "/get?" + params.toString(), 7000);
+      const plain = String(record?.plainLyrics || "").trim();
+      if (!plain) throw new Error("No plain lyrics source was found for this track. Try importing an LRC file instead.");
+      setAiStatus("AI is estimating line positions from the lyrics and track duration...");
+      const prompt = [
+        "Create APPROXIMATE line-level lyric timestamps for a music visualizer.",
+        "You are NOT given the audio. Do not claim these are exact or verified.",
+        "Return only valid JSON: an array of objects with numeric at (seconds) and text (one lyric line).",
+        "Use the supplied lyric text verbatim; do not add, omit, or rewrite lines.",
+        "Timestamps must be ascending, start near 0, and stay below the supplied duration.",
+        "Do not create per-word timestamps. Aim for plausible line spacing and leave instrumental gaps when apparent from the text.",
+        "Track: " + track.title,
+        "Artist: " + artist(track),
+        "Duration seconds: " + Math.max(1, Math.round(Number(track.duration || 0))),
+        "Lyrics:\n" + plain.slice(0, 10000)
+      ].join("\n\n");
+      const raw = await openRouterCall([{ role: "user", content: prompt }], 4000);
+      const jsonText = raw.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+      const parsed = JSON.parse(jsonText);
+      const rows = (Array.isArray(parsed) ? parsed : parsed?.lines || [])
+        .map(row => ({ at: Number(row.at), text: String(row.text || "").trim(), end: null, words: [], estimated: true }))
+        .filter(row => Number.isFinite(row.at) && row.at >= 0 && row.text && (!track.duration || row.at < track.duration))
+        .sort((a, b) => a.at - b.at);
+      if (rows.length < 2) throw new Error("The AI did not return enough usable timestamped lines. Try another free model.");
+      setLyrics(rows);
+      setLyricsStatus("ready");
+      setLyricFileName("");
+      setLyricsEstimated(true);
+      setCurrentTime(audio.current?.currentTime || 0);
+      setAiStatus("AI-estimated line sync ready · approximate, not audio-verified.");
+    } catch (e) { setAiStatus(e.message || "AI lyric synchronization failed."); }
+    finally { setAiBusy(false); }
+  }
 
   return <main ref={mainRef} onPointerMove={event => { const rect = event.currentTarget.getBoundingClientRect(); event.currentTarget.style.setProperty("--pointer-x", `${event.clientX - rect.left}px`); event.currentTarget.style.setProperty("--pointer-y", `${event.clientY - rect.top}px`); }} className={"universe aurora-universe " + (playing ? "is-playing" : "")} style={{ "--accent": palette[0], "--glow": palette[1], "--deep": palette[2] }}>
     <div className="noise" />
@@ -626,7 +719,7 @@ export default function App() {
 
     <div className="lyric-constellation" aria-live="polite">
       {lyrics.length > 0 && activeLyric >= 0 && (lyrics[activeLyric]?.words?.length || lyrics[activeLyric]?.text) ? <>
-        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyrics[activeLyric]?.words?.length ? "WORD-SYNCED LYRIC CONSTELLATION" : "LINE-SYNCED LYRIC CONSTELLATION"}</div>
+        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyricsEstimated ? "AI-ESTIMATED LINE SYNC" : lyrics[activeLyric]?.words?.length ? "WORD-SYNCED LYRIC CONSTELLATION" : "LINE-SYNCED LYRIC CONSTELLATION"}</div>
         <svg className="word-links" viewBox="0 0 100 100" preserveAspectRatio="none">
           {activeWords.slice(0, 18).map((word, i) => <line key={i} x1={8 + i * (84 / Math.max(1, activeWords.length))} y1={50 + Math.sin(i * 1.8) * 15} x2={8 + (i + 1) * (84 / Math.max(1, activeWords.length))} y2={50 + Math.sin((i + 1) * 1.8) * 15} />)}
         </svg>
@@ -649,19 +742,27 @@ export default function App() {
     <AnimatePresence>
       {open && <motion.div className="chooser-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .22 }}>
         <motion.section layoutId="aurora-library" className="music-dock aurora-dock" initial={{ opacity: 0, scale: .92, y: 24, filter: "blur(12px)" }} animate={{ opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }} exit={{ opacity: 0, scale: .08, x: -window.innerWidth * .42, y: -window.innerHeight * .38, filter: "blur(12px)" }} transition={{ type: "spring", stiffness: 175, damping: 22 }}>
-          <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>SELECT A FREQUENCY TO ENTER</small></div></div><button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div>
+          <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>SELECT A FREQUENCY TO ENTER</small></div></div><div className="dock-actions"><button className="ai-settings-trigger" onClick={() => { setAiSettingsOpen(v => !v); setAiStatus(""); }} aria-label="Open AI lyrics settings" title="AI lyrics settings"><Settings size={15} /></button><button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div></div>
+          <AnimatePresence>{aiSettingsOpen && <motion.div className="ai-settings-panel" initial={{ opacity: 0, height: 0, y: -8 }} animate={{ opacity: 1, height: "auto", y: 0 }} exit={{ opacity: 0, height: 0, y: -8 }} transition={{ duration: .2 }}>
+            <div className="ai-settings-heading"><Sparkles size={14} /><strong>LYRIC SYNC ENGINE</strong><span>OPENROUTER</span></div>
+            <label>API KEY<input type="password" autoComplete="off" value={openRouterKey} onChange={e => setOpenRouterKey(e.target.value)} placeholder="sk-or-v1-..." /></label>
+            <label>MODEL ID<input value={openRouterModel} onChange={e => setOpenRouterModel(e.target.value)} placeholder="openrouter/free" /></label>
+            <div className="ai-settings-actions"><button onClick={testOpenRouter} disabled={aiBusy}>TEST</button><button onClick={saveOpenRouterSettings} disabled={aiBusy}>SAVE LOCALLY</button><button className="ai-generate" onClick={generateAiLyricsSync} disabled={aiBusy || !track}>{aiBusy ? "WORKING..." : "GENERATE SYNC"}</button></div>
+            <p className="ai-settings-status">{aiStatus || (track ? "Selected: " + track.title : "Select a song, then generate an approximate lyric sync.")}</p>
+            <p className="ai-settings-note">Your key stays in this browser’s local storage and is sent directly to OpenRouter. AI timestamps are estimates because the model does not hear the recording. Free models have usage limits.</p>
+          </motion.div>}</AnimatePresence>
           <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
           <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>{query.trim() ? "AUDIUS PLAYBACK + APPLE DISCOVERY" : "FULL-LENGTH AUDIUS STREAMS"}</span></div>
           {error && <p className="form-error">{error}</p>}
           <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "") + (!item.playable ? " discovery-result" : "")} key={item.id} onClick={() => item.playable ? playSelected(item) : window.open(item.openUrl, "_blank", "noopener,noreferrer")}>
             <span className="result-art">{art(item) ? <img src={art(item)} alt="" /> : <Disc3 size={21} />}<span className="result-play"><Play size={12} /></span></span>
-            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)} · {item.playable ? "FULL-LENGTH AUDIUS STREAM" : "DISCOVERY ONLY · OPEN APPLE MUSIC"}{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{item.playable ? time(item.duration) : "↗ OPEN"}</span>
+            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)} · {item.preview ? "30-SECOND APPLE PREVIEW" : item.playable ? "FULL-LENGTH AUDIUS STREAM" : "DISCOVERY ONLY · OPEN APPLE MUSIC"}{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{item.preview ? "0:30 PREVIEW" : item.playable ? time(item.duration) : "↗ OPEN"}</span>
           </button>)}</div>
           {hasMore && results.length > 0 && <button className="load-more" onClick={() => load({ reset: false })} disabled={loading}>{loading ? "SCANNING..." : "LOAD MORE TRACKS"}</button>}
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
           <div className="dock-footer"><span>FULL-LENGTH OPEN STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
-          <p className="catalogue-note">Audius entries play full-length where available. Apple catalogue matches appear directly in these results as discovery-only entries; Audius tracks are playable when full streams are available. Short previews and extracted protected streams are never used.</p>
+          <p className="catalogue-note">Audius entries play full-length where available. Apple results include playable 30-second previews when supplied by Apple; remaining matches are discovery-only. AI lyric timing is approximate unless a synchronized source provides verified timestamps.</p>
 
         </motion.section>
       </motion.div>}
