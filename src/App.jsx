@@ -730,8 +730,24 @@ export default function App() {
     <AnimatePresence>
       {open && <motion.div className="chooser-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: .22 }}>
         <motion.section layoutId="aurora-library" className="music-dock aurora-dock" initial={{ opacity: 0, scale: .92, y: 24, filter: "blur(12px)" }} animate={{ opacity: 1, scale: 1, y: 0, filter: "blur(0px)" }} exit={{ opacity: 0, scale: .08, x: -window.innerWidth * .42, y: -window.innerHeight * .38, filter: "blur(12px)" }} transition={{ type: "spring", stiffness: 175, damping: 22 }}>
-          <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>SELECT A FREQUENCY TO ENTER</small></div></div><button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div>
-          <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
+          <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>{youtubeMode ? "YOUTUBE / SYNCHRONIZED LYRICS" : "SELECT A FREQUENCY TO ENTER"}</small></div></div><div style={{display:"flex",gap:8}}>{!youtubeMode && <button className="close-button" onClick={() => setYoutubeMode(true)} aria-label="Open YouTube" title="YouTube"><Youtube size={17}/></button>}{youtubeMode && <button className="close-button" onClick={() => setYoutubeMode(false)} aria-label="Back to music library"><Music2 size={17}/></button>}<button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div></div>
+          {youtubeMode ? <div style={{display:"grid",gap:12,padding:"12px 2px",color:"var(--accent)"}}>
+            <form onSubmit={youtubeSearchSubmit} style={{display:"flex",gap:8}}>
+              <input value={youtubeSearch} onChange={e=>setYoutubeSearch(e.target.value)} placeholder="Search YouTube for any song or artist..." aria-label="Search YouTube" style={{flex:1,minWidth:0}}/>
+              <button type="submit">SEARCH</button>
+            </form>
+            <form onSubmit={youtubeLoadSubmit} style={{display:"grid",gap:8}}>
+              <input value={youtubeUrl} onChange={e=>setYoutubeUrl(e.target.value)} placeholder="Paste the chosen YouTube video link..." aria-label="YouTube video URL"/>
+              <input value={youtubeMeta} onChange={e=>setYoutubeMeta(e.target.value)} placeholder="Song title — artist (recommended for lyric match)" aria-label="Song title and artist"/>
+              <button type="submit">PLAY VIDEO + FIND SYNCED LYRICS</button>
+            </form>
+            {youtubeError && <p className="form-error">{youtubeError}</p>}
+            {youtubeId && <div style={{position:"relative",width:"100%",aspectRatio:"16 / 9",background:"#05070d",borderRadius:12,overflow:"hidden"}}>
+              <div ref={youtubeMount} style={{position:"absolute",inset:0,width:"100%",height:"100%"}}/>
+              {!youtubeReady && <span style={{position:"absolute",inset:0,display:"grid",placeItems:"center",pointerEvents:"none"}}>CONNECTING YOUTUBE PLAYER</span>}
+            </div>}
+            <p className="catalogue-note">Search opens official YouTube results in a new tab. Paste a selected video's link here to play it inside Aurora. Lyrics follow playback time when a matching timed lyric source is available. Genuine word-by-word sync requires word timestamps; otherwise the existing line-synced fallback is used. Some videos disable embedding.</p>
+          </div> : <><form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
           <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>APPLE MUSIC + AUDIUS CATALOGUES</span></div>
           {error && <p className="form-error">{error}</p>}
@@ -743,6 +759,7 @@ export default function App() {
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
           <div className="dock-footer"><span>APPLE PREVIEWS + AUDIUS STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
           <p className="catalogue-note">Apple results provide short previews where available; Audius provides full streams for its open catalogue. Full commercial playback depends on the rights holder and a licensed music service.</p>
+          </>}
         </motion.section>
       </motion.div>}
     </AnimatePresence>
