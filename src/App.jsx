@@ -236,46 +236,89 @@ async function fetchLyricaWordLyrics(item) {
   }
 }
 
-async function fetchSyncedLyrics(item) {
+function lyricRecordResult(record, item) {
+  if (!record || cleanMatch(record.trackName || record.name) !== cleanMatch(item.title) ||
+      artistMatchScore(record.artistName, artist(item)) < .55) return null;
+  const wordRows = record.hasWordSync ? parseLyricsFile(record.lyricsfile) : [];
+  const rows = wordRows.length ? wordRows : parseLrc(record.syncedLyrics);
+  if (!rows.length) return null;
+  return {
+    rows,
+    wordSynced: wordRows.some(row => row.words.length),
+    estimated: false,
+    source: "LRCLIB"
+  };
+}
+
+async function fetchLRCLIBSearch(item) {
+  const params = new URLSearchParams({
+    track_name: item.title || "",
+    artist_name: artist(item)
+  });
+  const matches = await lyricRequest(LYRICS_API + "/search?" + params.toString(), 3500);
+  if (!Array.isArray(matches)) return null;
+  const candidates = matches
+    .map(record => ({ record, result: lyricRecordResult(record, item) }))
+    .filter(entry => entry.result)
+    .sort((a, b) => {
+      const word = Number(b.result.wordSynced) - Number(a.result.wordSynced);
+      const albumA = cleanMatch(a.record.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+      const albumB = cleanMatch(b.record.albumName) === cleanMatch(item.albumName) ? 1 : 0;
+      const durationA = item.duration ? Math.abs(Number(a.record.duration || 0) - item.duration) : 0;
+      const durationB = item.duration ? Math.abs(Number(b.record.duration || 0) - item.duration) : 0;
+      return word || albumB - albumA || durationA - durationB;
+    });
+  return candidates[0]?.result || null;
+}
+
+async function fetchSyncedLyrics(item, onUpdate = () => {}) {
   const key = [
     cleanMatch(item.title),
     cleanMatch(artist(item)),
     cleanMatch(item.albumName),
     Math.round(Number(item.duration || 0))
   ].join("|");
-  if (lyricCache.has(key)) return lyricCache.get(key);
-
-  // Query independent native word-timing aggregators at the same time.
-  // Promise.any returns the first verified word-synced result instead of
-  // waiting for a slow provider before trying the next one.
-  const wordSources = [
-    fetchLiriQoWordLyrics(item),
-    fetchLyricaWordLyrics(item)
-  ];
-  const rich = await Promise.any(wordSources.map(source => source.then(result => {
-    if (result?.wordSynced && result.rows?.some(row => row.words?.length)) return result;
-    throw new Error("No native word timing from this source");
-  }))).catch(() => null);
-
-  if (rich) {
-    lyricCache.set(key, rich);
-    return rich;
+  if (lyricCache.has(key)) {
+    const cached = lyricCache.get(key);
+    onUpdate(cached);
+    return cached;
   }
 
-  // Verified LRCLIB records are the fallback when native word timing is
-  // unavailable. They may provide line-level timing, not word-level timing.
-  const titleKey = cleanMatch(item.title);
-  const artistScore = value => artistMatchScore(value, artist(item));
-  const usable = record => {
-    if (!record || cleanMatch(record.trackName || record.name) !== titleKey || artistScore(record.artistName) < .55) return null;
-    const wordRows = record.hasWordSync ? parseLyricsFile(record.lyricsfile) : [];
-    const rows = wordRows.length ? wordRows : parseLrc(record.syncedLyrics);
-    if (!rows.length) return null;
-    const result = { rows, wordSynced: wordRows.some(row => row.words.length), estimated: false, source: "LRCLIB" };
-    lyricCache.set(key, result);
-    return result;
+  // Start all independent catalogues together. The first usable result is
+  // rendered immediately; a later native word-timed result upgrades it.
+  let best = null;
+  const publish = result => {
+    if (!result?.rows?.length) return;
+    const rank = value => value.wordSynced ? 3 : 1;
+    if (!best || rank(result) > rank(best)) {
+      best = result;
+      lyricCache.set(key, result);
+      onUpdate(result);
+    }
   };
+  const sources = [
+    fetchLiriQoWordLyrics(item),
+    fetchLyricaWordLyrics(item),
+    fetchLRCLIBSearch(item)
+  ];
+  const tasks = sources.map(source => source.then(result => {
+    if (!result?.rows?.length) throw new Error("No matched lyrics");
+    publish(result);
+    return result;
+  }));
+  const first = await Promise.any(tasks).catch(() => null);
+  if (first) {
+    // Let a native word-timed source that finishes shortly afterward improve
+    // a line-synced first result without delaying the first visible lyrics.
+    await Promise.race([
+      Promise.allSettled(tasks),
+      new Promise(resolve => setTimeout(resolve, 9000))
+    ]);
+    return best || first;
+  }
 
+  // Slow external LRCLIB lookup is only attempted if the fast parallel
+  // sources found nothing; it never blocks a usable first result.
   const params = new URLSearchParams({
     track_name: item.title || "",
     artist_name: artist(item),
@@ -284,36 +327,13 @@ async function fetchSyncedLyrics(item) {
   });
   try {
     const record = await lyricRequest(LYRICS_API + "/get?" + params.toString(), 6500);
-    const result = usable(record);
-    if (result) return result;
+    const result = lyricRecordResult(record, item);
+    if (result) {
+      publish(result);
+      return result;
+    }
   } catch {}
-
-  const queries = [
-    new URLSearchParams({ track_name: item.title || "", artist_name: artist(item) }),
-    new URLSearchParams({ track_name: item.title || "" }),
-    new URLSearchParams({ q: (item.title || "") + " " + artist(item) })
-  ];
-  for (const searchParams of queries) {
-    try {
-      const matches = await lyricRequest(LYRICS_API + "/search?" + searchParams.toString(), 5500);
-      if (!Array.isArray(matches)) continue;
-      const candidates = matches
-        .filter(row => cleanMatch(row.trackName || row.name) === titleKey && artistScore(row.artistName) >= .55)
-        .sort((a, b) => {
-          const wordA = a.hasWordSync ? 1 : 0, wordB = b.hasWordSync ? 1 : 0;
-          const albumA = cleanMatch(a.albumName) === cleanMatch(item.albumName) ? 1 : 0;
-          const albumB = cleanMatch(b.albumName) === cleanMatch(item.albumName) ? 1 : 0;
-          const durationA = item.duration ? Math.abs(Number(a.duration || 0) - item.duration) : 0;
-          const durationB = item.duration ? Math.abs(Number(b.duration || 0) - item.duration) : 0;
-          return wordB - wordA || albumB - albumA || durationA - durationB;
-        });
-      for (const candidate of candidates) {
-        const result = usable(candidate);
-        if (result) return result;
-      }
-    } catch {}
-  }
-  return { rows: [], wordSynced: false, estimated: false };
+  return best || { rows: [], wordSynced: false, estimated: false };
 }
 
 function cataloguePath(query, genre, offset) {
@@ -445,10 +465,18 @@ export default function App() {
     setRecent(old => [item, ...old.filter(x => x.id !== item.id)].slice(0, 8));
     setLyrics([]); setLyricsStatus("loading"); setLyricFileName(""); setCurrentTime(0); lastUiTimeRef.current = -1;
     setError(""); setOpen(false); envelopeRef.current = 0; lastLowRef.current = 0;
-    fetchSyncedLyrics(item).then(result => {
+    fetchSyncedLyrics(item, result => {
       if (requestId !== lyricRequestRef.current) return;
       setLyrics(result.rows);
       setLyricsStatus(result.rows.length ? "ready" : "missing");
+    }).then(result => {
+      if (requestId !== lyricRequestRef.current) return;
+      if (result.rows.length) {
+        setLyrics(result.rows);
+        setLyricsStatus("ready");
+      } else if (!lyrics.length) {
+        setLyricsStatus("missing");
+      }
     }).catch(() => {
       if (requestId === lyricRequestRef.current) setLyricsStatus("missing");
     });
@@ -546,15 +574,22 @@ export default function App() {
   const activeWords = useMemo(() => {
     if (activeLyric < 0) return [];
     const row = lyrics[activeLyric];
-    // Only render words that arrive with real per-word timestamps from a
-    // word-sync source. Never invent word positions from line-level LRC.
-    if (!Array.isArray(row.words) || !row.words.length) return [];
-    return row.words.slice(0, 18)
-      .filter(word => Number.isFinite(word.at) && word.at <= currentTime + .015)
+    // Prefer native per-word timing. Line-synced LRC remains usable as an
+    // immediate visual fallback, with words revealed in sequence at the
+    // verified line timestamp (not falsely labelled as native word sync).
+    const nativeWords = Array.isArray(row.words) && row.words.length;
+    const words = nativeWords
+      ? row.words
+      : String(row.text || "").trim().split(/\\s+/).filter(Boolean).map((text, index) => ({
+          text, at: row.at, end: row.end, index
+        }));
+    return words.slice(0, 18)
+      .filter(word => !nativeWords || (Number.isFinite(word.at) && word.at <= currentTime + .015))
       .map((word, index) => ({
         text: word.text.trim(),
-        index,
-        live: currentTime <= (word.end ?? word.at + .45)
+        index: Number.isFinite(word.index) ? word.index : index,
+        live: nativeWords ? currentTime <= (word.end ?? word.at + .45) : true,
+        native: !!nativeWords
       }));
   }, [lyrics, activeLyric, currentTime]);
 
@@ -581,12 +616,12 @@ export default function App() {
     <svg className="star-web" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><g>{links.map(([a, b], i) => <line key={i} x1={stars[a].x} y1={stars[a].y} x2={stars[b].x} y2={stars[b].y} style={{ "--line-delay": (i % 9) * .17 + "s" }} />)}</g><g>{stars.map(s => <circle key={s.id} cx={s.x} cy={s.y} r={s.id % 5 === 0 ? .16 : .1} />)}</g></svg>
 
     <div className="lyric-constellation" aria-live="polite">
-      {lyrics.length > 0 && activeLyric >= 0 && lyrics[activeLyric]?.words?.length ? <>
-        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyrics.some(row => row.words?.length) ? "WORD-SYNCED LYRIC CONSTELLATION" : "LYRIC CONSTELLATION"}</div>
+      {lyrics.length > 0 && activeLyric >= 0 && (lyrics[activeLyric]?.words?.length || lyrics[activeLyric]?.text) ? <>
+        <div className="lyric-kicker">{lyricFileName ? "LOCAL LYRIC CONSTELLATION" : lyrics[activeLyric]?.words?.length ? "WORD-SYNCED LYRIC CONSTELLATION" : "LINE-SYNCED LYRIC CONSTELLATION"}</div>
         <svg className="word-links" viewBox="0 0 100 100" preserveAspectRatio="none">
           {activeWords.slice(0, 18).map((word, i) => <line key={i} x1={8 + i * (84 / Math.max(1, activeWords.length))} y1={50 + Math.sin(i * 1.8) * 15} x2={8 + (i + 1) * (84 / Math.max(1, activeWords.length))} y2={50 + Math.sin((i + 1) * 1.8) * 15} />)}
         </svg>
-        <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + word.index} className={"lyric-word " + (word.live ? "is-current-word" : "")} initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ duration: .24, type: "spring", stiffness: 220, damping: 19 }}>{word.text}<i /></motion.span>)}</div>
+        <div className="lyric-word-row">{activeWords.slice(0, 18).map((word, i) => <motion.span key={activeLyric + "-" + word.index} className={"lyric-word " + (word.live ? "is-current-word" : "")} initial={{ opacity: 0, y: 24, scale: .7, filter: "blur(8px)" }} animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }} transition={{ duration: .24, delay: word.native ? 0 : i * .055, type: "spring", stiffness: 220, damping: 19 }}>{word.text}<i /></motion.span>)}</div>
         <div className="lyric-next">{lyrics[activeLyric + 1]?.text || ""}</div>
       </> : <div className="lyric-idle">{track ? (lyricsStatus === "loading" ? "SEARCHING FOR SYNCHRONIZED LYRICS" : lyricsStatus === "missing" ? "NO SYNCHRONIZED LYRICS FOUND FOR THIS TRACK" : lyrics.length > 0 ? "NATIVE WORD SYNC NOT AVAILABLE FOR THIS TRACK" : "AURORA · SOUND BECOMES LIGHT") : "AURORA · SOUND BECOMES LIGHT"}</div>}
     </div>
