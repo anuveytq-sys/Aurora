@@ -694,20 +694,49 @@ export default function App() {
         model: openRouterModel.trim() || "openrouter/free",
         messages,
         temperature: 0.15,
-        max_tokens: maxTokens
+        max_tokens: Math.max(256, maxTokens),
+        stream: false
       })
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload?.error?.message || ("OpenRouter request failed (" + response.status + ")."));
-    const content = payload?.choices?.[0]?.message?.content;
-    if (!content) throw new Error("The selected AI model returned an empty response.");
-    return typeof content === "string" ? content : JSON.stringify(content);
+
+    const raw = await response.text();
+    let payload = {};
+    try { payload = raw ? JSON.parse(raw) : {}; }
+    catch { throw new Error("OpenRouter returned an unreadable response (HTTP " + response.status + ")."); }
+
+    if (!response.ok || payload?.error) {
+      const message = payload?.error?.message || payload?.message || ("OpenRouter request failed (" + response.status + ").");
+      throw new Error(message);
+    }
+
+    // Chat Completions normally returns message.content as a string, but some
+    // providers return content parts. Normalize both without serializing objects.
+    const choice = payload?.choices?.[0];
+    const message = choice?.message || {};
+    if (choice?.error) throw new Error(choice.error.message || "The selected OpenRouter provider failed.");
+    const content = message.content;
+    const normalized = typeof content === "string"
+      ? content.trim()
+      : Array.isArray(content)
+        ? content.map(part => typeof part === "string" ? part : (part?.text || part?.content || "")).join("").trim()
+        : typeof payload?.output_text === "string" ? payload.output_text.trim() : "";
+
+    if (normalized) return normalized;
+
+    const finish = choice?.finish_reason || "unknown";
+    const reasoningTokens = Number(payload?.usage?.completion_tokens_details?.reasoning_tokens || 0);
+    if (finish === "length" || reasoningTokens > 0) {
+      throw new Error("The model used its output budget for reasoning and returned no text. Increase the model's output budget or choose a non-reasoning chat model.");
+    }
+    if (message.refusal) throw new Error("The selected model declined this request: " + message.refusal);
+    throw new Error("OpenRouter connected, but model " + (payload?.model || openRouterModel.trim() || "selected model") +
+      " returned no text (finish: " + finish + "). Try another available model.");
   }
 
   async function testOpenRouter() {
     setAiBusy(true); setAiStatus("Testing OpenRouter connection...");
     try {
-      const answer = await openRouterCall([{ role: "user", content: "Reply with exactly: AURORA_CONNECTED" }], 30);
+      const answer = await openRouterCall([{ role: "user", content: "Reply with exactly: AURORA_CONNECTED" }], 256);
       if (!answer.includes("AURORA_CONNECTED")) throw new Error("The model responded, but the connection test phrase was not returned.");
       setAiStatus("Connection successful · " + (openRouterModel.trim() || "openrouter/free"));
     } catch (e) { setAiStatus(e.message || "Connection test failed."); }
@@ -748,7 +777,7 @@ export default function App() {
         "Duration seconds: " + Math.max(1, Math.round(Number(track.duration || 0))),
         "Lyrics:\n" + plain.slice(0, 10000)
       ].join("\n\n");
-      const raw = await openRouterCall([{ role: "user", content: prompt }], 4000);
+      const raw = await openRouterCall([{ role: "user", content: prompt }], 6000);
       const jsonText = raw.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
       const parsed = JSON.parse(jsonText);
       const rows = (Array.isArray(parsed) ? parsed : parsed?.lines || [])
