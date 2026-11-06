@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AudioLines, Disc3, Headphones, Music2, Play, Search, X, FileUp, ExternalLink } from "lucide-react";
+import { AudioLines, Disc3, Headphones, Music2, Play, Search, X, FileUp, ExternalLink, Youtube } from "lucide-react";
 
 const API = "https://api.audius.co/v1";
 const APP_NAME = "AURORA";
@@ -382,7 +382,17 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [palette, setPalette] = useState(["#a9c8ff", "#5976c8", "#111a38"]);
   const [sourceLabel, setSourceLabel] = useState("AUDIO REACTIVE");
+  const [youtubeMode, setYoutubeMode] = useState(false);
+  const [youtubeSearch, setYoutubeSearch] = useState("");
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [youtubeMeta, setYoutubeMeta] = useState("");
+  const [youtubeId, setYoutubeId] = useState("");
+  const [youtubeError, setYoutubeError] = useState("");
+  const [youtubeReady, setYoutubeReady] = useState(false);
   const audio = useRef(null);
+  const youtubeMount = useRef(null);
+  const youtubePlayer = useRef(null);
+  const youtubePlaying = useRef(false);
   const fileInput = useRef(null);
   const mainRef = useRef(null);
   const analyserRef = useRef(null);
