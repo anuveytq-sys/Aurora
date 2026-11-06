@@ -217,11 +217,3 @@ body{overscroll-behavior:none}
   .aurora-universe .cursor-aura{transition:none}
 }
 
-
-/* Federated catalogue source links */
-.provider-search-links{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 10px}
-.provider-search-links a{display:inline-flex;align-items:center;gap:5px;padding:6px 9px;border:1px solid color-mix(in srgb,var(--accent),transparent 72%);border-radius:4px;background:#ffffff06;color:#aebbd5;text-decoration:none;font:7px 'DM Mono',monospace;letter-spacing:.1em;transition:color .2s,border-color .2s,background .2s}
-.provider-search-links a:hover{color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent),transparent 93%)}
-.aurora-dock .discovery-result .result-play{opacity:.35}
-.aurora-dock .discovery-result:hover .result-play{opacity:.8}
-.aurora-dock .discovery-result .result-duration{color:var(--accent)}
