@@ -5,7 +5,6 @@ import { AudioLines, Disc3, Headphones, Play, Search, X, FileUp } from "lucide-r
 const API = "https://api.audius.co/v1";
 const APP_NAME = "AURORA";
 const PAGE_SIZE = 30;
-const ITUNES = "https://itunes.apple.com";
 const LYRICS_API = "https://lrclib.net/api";
 const STORAGE = "aurora.audius.last-track.v1";
 const genres = ["All", "Electronic", "Hip-Hop/Rap", "Pop", "Rock", "Ambient", "Classical", "Jazz", "House", "Techno"];
@@ -24,34 +23,6 @@ async function api(path) {
 }
 function stream(track) {
   return API + "/tracks/" + encodeURIComponent(track.id) + "/stream?app_name=" + APP_NAME;
-}
-function normalizeApple(t) {
-  return {
-    id: "apple-" + t.trackId, title: t.trackName, artistName: t.artistName,
-    albumName: t.collectionName, artworkUrl100: t.artworkUrl100,
-    duration: Math.round((t.trackTimeMillis || 0) / 1000),
-    previewUrl: t.previewUrl, trackViewUrl: t.trackViewUrl,
-    genre: t.primaryGenreName || "Pop", source: "Apple Music preview"
-  };
-}
-async function appleSearch(term) {
-  const url = term
-    ? ITUNES + "/search?entity=song&limit=30&country=IN&term=" + encodeURIComponent(term)
-    : ITUNES + "/rss/topsongs/limit=50/json";
-  const response = await fetch(url);
-  if (!response.ok) throw new Error("Apple music catalogue unavailable");
-  const data = await response.json();
-  const rows = term ? (data.results || []) : (data.feed?.entry || []).map(entry => ({
-    trackId: entry.id?.attributes?.["im:id"],
-    trackName: entry["im:name"]?.label,
-    artistName: entry["im:artist"]?.label,
-    collectionName: entry["im:collection"]?.label,
-    artworkUrl100: entry["im:image"]?.at(-1)?.label,
-    previewUrl: entry.link?.find(link => link.attributes?.type === "audio/x-m4a")?.attributes?.href,
-    trackViewUrl: entry.id?.label,
-    primaryGenreName: entry.category?.attributes?.label
-  }));
-  return rows.filter(t => t.trackName && t.artistName && t.previewUrl).map(normalizeApple);
 }
 const lyricCache = new Map();
 const cleanMatch = value => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -369,8 +340,8 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [genre, setGenre] = useState("All");
   const [results, setResults] = useState([]);
-  const [track, setTrack] = useState(() => { try { return JSON.parse(localStorage.getItem(STORAGE) || "null"); } catch { return null; } });
-  const [recent, setRecent] = useState(() => { try { return JSON.parse(localStorage.getItem("aurora.recent") || "[]"); } catch { return []; } });
+  const [track, setTrack] = useState(() => { try { const saved = JSON.parse(localStorage.getItem(STORAGE) || "null"); return String(saved?.id || "").startsWith("apple-") ? null : saved; } catch { return null; } });
+  const [recent, setRecent] = useState(() => { try { return JSON.parse(localStorage.getItem("aurora.recent") || "[]").filter(item => !String(item?.id || "").startsWith("apple-")); } catch { return []; } });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [playing, setPlaying] = useState(false);
