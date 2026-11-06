@@ -315,6 +315,40 @@ function cataloguePath(query, genre, offset) {
   return "/tracks/" + (query.trim() ? "search" : "trending") + "?" + params.toString();
 }
 
+// Deezer's public catalogue returns official short previews. JSONP avoids
+// routing catalogue lookups through an unrelated third-party CORS proxy.
+function searchDeezerMetadata(query) {
+  if (!query.trim()) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const callback = "__auroraDeezer_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+    const script = document.createElement("script");
+    const cleanup = () => { clearTimeout(timer); delete window[callback]; script.remove(); };
+    const finish = (error, rows = []) => { cleanup(); if (error) reject(error); else resolve(rows); };
+    const timer = setTimeout(() => finish(new Error("Deezer catalogue timed out.")), 12000);
+    window[callback] = payload => {
+      if (payload?.error) return finish(new Error(payload.error.message || "Deezer catalogue unavailable."));
+      const rows = (payload?.data || []).filter(item => item?.id && item?.title && item?.artist?.name).map(item => ({
+        id: "deezer-" + item.id,
+        title: item.title,
+        artistName: item.artist.name,
+        albumName: item.album?.title || "",
+        artworkUrl100: item.album?.cover_medium || item.album?.cover || "",
+        duration: Number(item.duration || 0),
+        source: "Deezer",
+        previewUrl: item.preview || "",
+        preview: Boolean(item.preview),
+        playable: Boolean(item.preview),
+        openUrl: item.link || ""
+      }));
+      finish(null, rows);
+    };
+    script.onerror = () => finish(new Error("Deezer catalogue could not be reached."));
+    const params = new URLSearchParams({ q: query.trim(), limit: "100", output: "jsonp", callback });
+    script.src = "https://api.deezer.com/search?" + params.toString();
+    document.head.appendChild(script);
+  });
+}
+
 // Apple’s public iTunes Search endpoint supplies catalogue metadata and its
 // official 30-second previews. Search several storefronts so regional releases
 // and catalogue differences are not missed.
@@ -423,22 +457,27 @@ export default function App() {
         .filter(t => t && t.id && t.title && Number(t.duration) > 0)
         .map(t => ({ ...t, source: "Audius", playable: true, duration: Number(t.duration) })));
       const appleTask = reset && q.trim() ? searchAppleMetadata(q) : Promise.resolve([]);
-      const [audiusResult, appleResult] = await Promise.allSettled([audiusTask, appleTask]);
+      const deezerTask = reset && q.trim() ? searchDeezerMetadata(q) : Promise.resolve([]);
+      const [audiusResult, appleResult, deezerResult] = await Promise.allSettled([audiusTask, appleTask, deezerTask]);
       const audius = audiusResult.status === "fulfilled" ? audiusResult.value : [];
       const apple = appleResult.status === "fulfilled" ? appleResult.value : [];
+      const deezer = deezerResult.status === "fulfilled" ? deezerResult.value : [];
       const key = t => (String(t.title || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "|" + artist(t).toLowerCase().replace(/[^a-z0-9]/g, ""));
       const playable = audius.filter((t, i, all) => all.findIndex(x => key(x) === key(t)) === i);
-      const discovery = apple.filter(t => !playable.some(x => key(x) === key(t)));
+      const previewCatalogues = [...deezer, ...apple];
+      const discovery = previewCatalogues.filter((t, i, all) =>
+        !playable.some(x => key(x) === key(t)) && all.findIndex(x => key(x) === key(t)) === i
+      );
       const merged = [...playable, ...discovery];
       setResults(old => reset ? merged : [...old, ...merged.filter(item => !old.some(existing => existing.id === item.id))]);
       setOffset(start + audius.length);
       setHasMore(audius.length === PAGE_SIZE);
-      if (audiusResult.status === "rejected" && appleResult.status === "rejected") {
+      if (audiusResult.status === "rejected" && appleResult.status === "rejected" && deezerResult.status === "rejected") {
         setError("Music catalogues are temporarily unavailable. Please retry.");
       } else if (audiusResult.status === "rejected") {
-        setError("Audius full-stream search is unavailable; showing discovery matches only.");
-      } else if (appleResult.status === "rejected" && q.trim()) {
-        setError("Apple discovery is unavailable right now; Audius full-stream results are still shown.");
+        setError("Audius full-stream search is unavailable; showing available preview matches.");
+      } else if (appleResult.status === "rejected" && deezerResult.status === "rejected" && q.trim()) {
+        setError("Apple and Deezer preview search is unavailable right now; Audius full-stream results are still shown.");
       } else if (!merged.length && reset) {
         setError("No matches found. Try another title or artist.");
       }
@@ -770,7 +809,7 @@ export default function App() {
           </motion.div>}</AnimatePresence>
           <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
-          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>{query.trim() ? "AUDIUS + 6 APPLE STOREFRONTS" : "FULL-LENGTH AUDIUS STREAMS"}</span></div>
+          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>{query.trim() ? "AUDIUS + DEEZER + 6 APPLE STOREFRONTS" : "FULL-LENGTH AUDIUS STREAMS"}</span></div>
           {error && <p className="form-error">{error}</p>}
           <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "") + (!item.playable ? " discovery-result" : "")} key={item.id} onClick={() => item.playable ? playSelected(item) : window.open(item.openUrl, "_blank", "noopener,noreferrer")}>
             <span className="result-art">{art(item) ? <img src={art(item)} alt="" /> : <Disc3 size={21} />}<span className="result-play"><Play size={12} /></span></span>
@@ -779,7 +818,7 @@ export default function App() {
           {hasMore && results.length > 0 && <button className="load-more" onClick={() => load({ reset: false })} disabled={loading}>{loading ? "SCANNING..." : "LOAD MORE TRACKS"}</button>}
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
           <div className="dock-footer"><span>FULL-LENGTH OPEN STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
-          <p className="catalogue-note">Search combines Audius with Apple catalogue results across India, US, UK, Canada, Australia and New Zealand. Apple 30-second previews play here when supplied; Audius tracks stream full-length where available.</p>
+          <p className="catalogue-note">Search combines Audius full streams, Deezer 30-second previews, and Apple previews across India, US, UK, Canada, Australia and New Zealand. Preview availability depends on each catalogue.</p>
 
         </motion.section>
       </motion.div>}
