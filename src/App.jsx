@@ -313,6 +313,40 @@ function cataloguePath(query, genre, offset) {
   if (genre !== "All") params.set("genre", genre);
   return "/tracks/" + (query.trim() ? "search" : "trending") + "?" + params.toString();
 }
+
+// Apple’s public iTunes Search endpoint is used for discovery metadata only.
+// Its 30-second previewUrl is deliberately never read or played.
+async function searchAppleMetadata(query) {
+  if (!query.trim()) return [];
+  const params = new URLSearchParams({ term: query.trim(), entity: "song", limit: "25", country: "IN" });
+  const response = await fetch("https://itunes.apple.com/search?" + params.toString(), {
+    headers: { Accept: "application/json" }
+  });
+  if (!response.ok) throw new Error("Apple catalogue search is temporarily unavailable.");
+  const payload = await response.json();
+  return (payload.results || [])
+    .filter(item => item.kind === "song" && item.trackId && item.trackName && item.artistName)
+    .map(item => ({
+      id: "apple-catalog-" + item.trackId,
+      title: item.trackName,
+      artistName: item.artistName,
+      albumName: item.collectionName || "",
+      artworkUrl100: item.artworkUrl100 || "",
+      duration: Number(item.trackTimeMillis || 0) / 1000,
+      source: "Apple / iTunes metadata",
+      playable: false,
+      openUrl: item.trackViewUrl || ("https://music.apple.com/in/search?term=" + encodeURIComponent(item.trackName + " " + item.artistName))
+    }));
+}
+function providerSearchLinks(query) {
+  const term = encodeURIComponent(query.trim());
+  return [
+    { name: "APPLE MUSIC", url: "https://music.apple.com/in/search?term=" + term },
+    { name: "SPOTIFY", url: "https://open.spotify.com/search/" + term },
+    { name: "GAANA", url: "https://gaana.com/search/" + term },
+    { name: "JIOSAAVN", url: "https://www.jiosaavn.com/search/" + term }
+  ];
+}
 function parseLrc(source) {
   const rows = [];
   const lines = String(source || "").split(/\r?\n/);
@@ -370,17 +404,22 @@ export default function App() {
     setLoading(true); setError("");
     const start = reset ? 0 : offset;
     try {
-      const audius = (await api(cataloguePath(q, g, start)))
+      const audiusTask = api(cataloguePath(q, g, start)).then(items => items
         .filter(t => t && t.id && t.title && Number(t.duration) > 0)
-        .map(t => ({ ...t, source: "Audius", duration: Number(t.duration) }));
+        .map(t => ({ ...t, source: "Audius", playable: true, duration: Number(t.duration) })));
+      const appleTask = reset && q.trim() ? searchAppleMetadata(q).catch(() => []) : Promise.resolve([]);
+      const [audius, apple] = await Promise.all([audiusTask, appleTask]);
       const key = t => (String(t.title || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "|" + artist(t).toLowerCase().replace(/[^a-z0-9]/g, ""));
-      const merged = audius.filter((t, i, all) => all.findIndex(x => key(x) === key(t)) === i);
+      const playable = audius.filter((t, i, all) => all.findIndex(x => key(x) === key(t)) === i);
+      const discovery = apple.filter(t => !playable.some(x => key(x) === key(t)));
+      const merged = [...playable, ...discovery];
       setResults(old => reset ? merged : [...old, ...merged.filter(item => !old.some(existing => existing.id === item.id))]);
       setOffset(start + audius.length);
       setHasMore(audius.length === PAGE_SIZE);
-      if (!merged.length && reset) setError("No full-length open-stream matches found. Try another title or artist.");
-      
-    } catch (e) { setError(e.message || "Could not load tracks."); }
+      if (!merged.length && reset) setError("No matches found. Try another title or artist.");
+      if (reset && q.trim() && !apple.length) setSourceLabel("APPLE DISCOVERY UNAVAILABLE · AUDIUS ACTIVE");
+      else setSourceLabel("MULTI-CATALOGUE DISCOVERY");
+    } catch (e) { setError(e.message || "Could not load music catalogue."); }
     finally { setLoading(false); }
   }, [query, genre, offset]);
 
@@ -613,16 +652,17 @@ export default function App() {
           <div className="dock-heading"><div className="dock-title"><span className="dock-symbol"><Headphones size={18} /></span><div><strong>AURORA / SONG UNIVERSE</strong><small>SELECT A FREQUENCY TO ENTER</small></div></div><button className="close-button" onClick={() => setOpen(false)} aria-label="Close"><X size={17} /></button></div>
           <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
-          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>FULL-LENGTH AUDIUS STREAMS</span></div>
+          <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>{query.trim() ? "AUDIUS PLAYBACK + APPLE DISCOVERY" : "FULL-LENGTH AUDIUS STREAMS"}</span></div>
+          {query.trim() && <div className="provider-search-links">{providerSearchLinks(query).map(provider => <a key={provider.name} href={provider.url} target="_blank" rel="noreferrer">{provider.name} ↗</a>)}</div>}
           {error && <p className="form-error">{error}</p>}
-          <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "")} key={item.id} onClick={() => playSelected(item)}>
+          <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "") + (!item.playable ? " discovery-result" : "")} key={item.id} onClick={() => item.playable ? playSelected(item) : window.open(item.openUrl, "_blank", "noopener,noreferrer")}>
             <span className="result-art">{art(item) ? <img src={art(item)} alt="" /> : <Disc3 size={21} />}<span className="result-play"><Play size={12} /></span></span>
-            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)} · FULL-LENGTH STREAM{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{time(item.duration)}</span>
+            <span className="result-copy"><strong>{item.title}</strong><small>{artist(item)} · {item.playable ? "FULL-LENGTH AUDIUS STREAM" : "DISCOVERY ONLY · OPEN APPLE MUSIC"}{item.genre ? " · " + item.genre : ""}</small></span><span className="result-duration">{item.playable ? time(item.duration) : "↗ OPEN"}</span>
           </button>)}</div>
           {hasMore && results.length > 0 && <button className="load-more" onClick={() => load({ reset: false })} disabled={loading}>{loading ? "SCANNING..." : "LOAD MORE TRACKS"}</button>}
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
           <div className="dock-footer"><span>FULL-LENGTH OPEN STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
-          <p className="catalogue-note">Only full-length streams are listed here. Commercial catalogue coverage depends on music licensing; short preview clips are intentionally excluded.</p>
+          <p className="catalogue-note">Audius entries play full-length where available. Apple results are discovery metadata and open Apple Music; Spotify, Gaana and JioSaavn searches open their official services. Aurora never plays short previews or extracts protected streams.</p>
 
         </motion.section>
       </motion.div>}
