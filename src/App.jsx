@@ -335,7 +335,7 @@ async function searchAppleMetadata(query) {
       duration: Number(item.trackTimeMillis || 0) / 1000,
       source: "Apple / iTunes metadata",
       playable: false,
-      openUrl: item.trackViewUrl || ("https://music.apple.com/in/search?term=" + encodeURIComponent(item.trackName + " " + item.artistName))
+      openUrl: "https://music.apple.com/in/search?term=" + encodeURIComponent(item.trackName + " " + item.artistName)
     }));
 }
 function providerSearchLinks(query) {
@@ -407,8 +407,10 @@ export default function App() {
       const audiusTask = api(cataloguePath(q, g, start)).then(items => items
         .filter(t => t && t.id && t.title && Number(t.duration) > 0)
         .map(t => ({ ...t, source: "Audius", playable: true, duration: Number(t.duration) })));
-      const appleTask = reset && q.trim() ? searchAppleMetadata(q).catch(() => []) : Promise.resolve([]);
-      const [audius, apple] = await Promise.all([audiusTask, appleTask]);
+      const appleTask = reset && q.trim() ? searchAppleMetadata(q) : Promise.resolve([]);
+      const [audiusResult, appleResult] = await Promise.allSettled([audiusTask, appleTask]);
+      const audius = audiusResult.status === "fulfilled" ? audiusResult.value : [];
+      const apple = appleResult.status === "fulfilled" ? appleResult.value : [];
       const key = t => (String(t.title || "").toLowerCase().replace(/[^a-z0-9]/g, "") + "|" + artist(t).toLowerCase().replace(/[^a-z0-9]/g, ""));
       const playable = audius.filter((t, i, all) => all.findIndex(x => key(x) === key(t)) === i);
       const discovery = apple.filter(t => !playable.some(x => key(x) === key(t)));
@@ -416,9 +418,16 @@ export default function App() {
       setResults(old => reset ? merged : [...old, ...merged.filter(item => !old.some(existing => existing.id === item.id))]);
       setOffset(start + audius.length);
       setHasMore(audius.length === PAGE_SIZE);
-      if (!merged.length && reset) setError("No matches found. Try another title or artist.");
-      if (reset && q.trim() && !apple.length) setSourceLabel("APPLE DISCOVERY UNAVAILABLE · AUDIUS ACTIVE");
-      else setSourceLabel("MULTI-CATALOGUE DISCOVERY");
+      if (audiusResult.status === "rejected" && appleResult.status === "rejected") {
+        setError("Music catalogues are temporarily unavailable. Please retry.");
+      } else if (audiusResult.status === "rejected") {
+        setError("Audius full-stream search is unavailable; showing discovery matches only.");
+      } else if (appleResult.status === "rejected" && q.trim()) {
+        setError("Apple discovery is unavailable right now; Audius full-stream results are still shown.");
+      } else if (!merged.length && reset) {
+        setError("No matches found. Try another title or artist.");
+      }
+      setSourceLabel("MULTI-CATALOGUE DISCOVERY");
     } catch (e) { setError(e.message || "Could not load music catalogue."); }
     finally { setLoading(false); }
   }, [query, genre, offset]);
