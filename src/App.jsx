@@ -514,6 +514,86 @@ export default function App() {
       } catch { try { await element.play(); } catch { setError("Playback failed. Choose another track."); } }
     } else element.pause();
   }
+  function youtubeSearchSubmit(event) {
+    event.preventDefault();
+    const q = youtubeSearch.trim();
+    if (q) window.open("https://www.youtube.com/results?search_query=" + encodeURIComponent(q), "_blank", "noopener,noreferrer");
+  }
+  async function youtubeLoadSubmit(event) {
+    event.preventDefault();
+    const raw = youtubeUrl.trim();
+    let id = raw;
+    try {
+      const url = new URL(raw);
+      id = url.hostname.includes("youtu.be") ? url.pathname.split("/").filter(Boolean)[0] : (url.searchParams.get("v") || url.pathname.split("/").filter(Boolean).pop());
+    } catch {}
+    if (!/^[A-Za-z0-9_-]{11}$/.test(id)) { setYoutubeError("Paste a valid YouTube video link."); return; }
+    setYoutubeError("");
+    setYoutubeReady(false);
+    setYoutubeId(id);
+    youtubePlaying.current = false;
+    const parts = youtubeMeta.split(" — ");
+    let title = parts[0]?.trim() || "";
+    let artistName = parts.slice(1).join(" — ").trim() || "YouTube";
+    if (!title) {
+      try {
+        const res = await fetch("https://www.youtube.com/oembed?url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + id) + "&format=json");
+        if (res.ok) { const meta = await res.json(); title = meta.title || "YouTube video"; artistName = meta.author_name || artistName; }
+      } catch {}
+    }
+    const item = { id: "youtube-" + id, title: title || "YouTube video", artistName, duration: 0, source: "YouTube" };
+    setTrack(item);
+    setLyrics([]);
+    setLyricsStatus("loading");
+    setLyricFileName("");
+    setCurrentTime(0);
+    lastUiTimeRef.current = -1;
+    const requestId = ++lyricRequestRef.current;
+    fetchSyncedLyrics(item, result => {
+      if (requestId !== lyricRequestRef.current) return;
+      setLyrics(result.rows);
+      setLyricsStatus(result.rows.length ? "ready" : "missing");
+    }).then(result => {
+      if (requestId !== lyricRequestRef.current) return;
+      setLyrics(result.rows);
+      setLyricsStatus(result.rows.length ? "ready" : "missing");
+    }).catch(() => { if (requestId === lyricRequestRef.current) setLyricsStatus("missing"); });
+  }
+  useEffect(() => {
+    if (!youtubeId || !youtubeMount.current) return;
+    let cancelled = false;
+    const mountPlayer = () => {
+      if (cancelled || !window.YT?.Player || !youtubeMount.current) return;
+      if (youtubePlayer.current) { try { youtubePlayer.current.destroy(); } catch {} }
+      youtubePlayer.current = new window.YT.Player(youtubeMount.current, {
+        videoId: youtubeId,
+        playerVars: { playsinline: 1, rel: 0, origin: window.location.origin },
+        events: {
+          onReady: () => { if (!cancelled) setYoutubeReady(true); },
+          onStateChange: event => {
+            const state = window.YT.PlayerState;
+            const active = event.data === state.PLAYING;
+            youtubePlaying.current = active;
+            setPlaying(active);
+          },
+          onError: event => setYoutubeError(event.data === 101 || event.data === 150 ? "This video does not allow embedded playback." : "YouTube playback is unavailable for this video.")
+        }
+      });
+    };
+    if (window.YT?.Player) mountPlayer();
+    else {
+      const prior = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => { try { prior?.(); } catch {} mountPlayer(); };
+      if (!document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
+        const script = document.createElement("script");
+        script.src = "https://www.youtube.com/iframe_api";
+        script.async = true;
+        script.onerror = () => setYoutubeError("Could not load the YouTube player.");
+        document.head.appendChild(script);
+      }
+    }
+    return () => { cancelled = true; youtubePlaying.current = false; if (youtubePlayer.current) { try { youtubePlayer.current.destroy(); } catch {} youtubePlayer.current = null; } };
+  }, [youtubeId]);
   useEffect(() => {
     let frame;
     const tick = timestamp => {
