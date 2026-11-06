@@ -338,15 +338,6 @@ async function searchAppleMetadata(query) {
       openUrl: "https://music.apple.com/in/search?term=" + encodeURIComponent(item.trackName + " " + item.artistName)
     }));
 }
-function providerSearchLinks(query) {
-  const term = encodeURIComponent(query.trim());
-  return [
-    { name: "APPLE MUSIC", url: "https://music.apple.com/in/search?term=" + term },
-    { name: "SPOTIFY", url: "https://open.spotify.com/search/" + term },
-    { name: "GAANA", url: "https://gaana.com/" },
-    { name: "JIOSAAVN", url: "https://www.jiosaavn.com/" }
-  ];
-}
 function parseLrc(source) {
   const rows = [];
   const lines = String(source || "").split(/\r?\n/);
@@ -662,7 +653,6 @@ export default function App() {
           <form className="search-form" onSubmit={runSearch}><Search size={17} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search artist, track or sound..." aria-label="Search music" /><button type="submit" disabled={loading}>{loading ? "..." : "SEARCH"}</button></form>
           <div className="genre-row">{genres.map(g => <button key={g} className={genre === g ? "active" : ""} onClick={() => changeGenre(g)}>{g}</button>)}</div>
           <div className="library-toolbar"><span>{query.trim() ? "SEARCH RESULTS" : genre === "All" ? "TRENDING FREQUENCIES" : genre.toUpperCase()}</span><span>{query.trim() ? "AUDIUS PLAYBACK + APPLE DISCOVERY" : "FULL-LENGTH AUDIUS STREAMS"}</span></div>
-          {query.trim() && <div className="provider-search-links">{providerSearchLinks(query).map(provider => <a key={provider.name} href={provider.url} target="_blank" rel="noreferrer">{provider.name} ↗</a>)}</div>}
           {error && <p className="form-error">{error}</p>}
           <div className="track-results">{results.map(item => <button className={"track-result " + (track?.id === item.id ? "selected" : "") + (!item.playable ? " discovery-result" : "")} key={item.id} onClick={() => item.playable ? playSelected(item) : window.open(item.openUrl, "_blank", "noopener,noreferrer")}>
             <span className="result-art">{art(item) ? <img src={art(item)} alt="" /> : <Disc3 size={21} />}<span className="result-play"><Play size={12} /></span></span>
@@ -671,7 +661,7 @@ export default function App() {
           {hasMore && results.length > 0 && <button className="load-more" onClick={() => load({ reset: false })} disabled={loading}>{loading ? "SCANNING..." : "LOAD MORE TRACKS"}</button>}
           {recent.length > 0 && <div className="recent-strip"><span>RECENT</span>{recent.slice(0, 4).map(item => <button key={item.id} onClick={() => playSelected(item)}>{item.title}</button>)}</div>}
           <div className="dock-footer"><span>FULL-LENGTH OPEN STREAMS</span><span>{playing ? "SIGNAL ACTIVE" : "AWAITING INPUT"}</span></div>
-          <p className="catalogue-note">Audius entries play full-length where available. Apple results are discovery metadata and open Apple Music; Spotify, Gaana and JioSaavn searches open their official services. Aurora never plays short previews or extracts protected streams.</p>
+          <p className="catalogue-note">Audius entries play full-length where available. Apple catalogue matches appear directly in these results as discovery-only entries; Audius tracks are playable when full streams are available. Short previews and extracted protected streams are never used.</p>
 
         </motion.section>
       </motion.div>}
